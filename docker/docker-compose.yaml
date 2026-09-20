@@ -1,0 +1,24 @@
+services:
+  isaaclab:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: relic-isaac:latest
+    runtime: nvidia
+    network_mode: host
+    environment:
+      - DISPLAY=${DISPLAY}
+      - ACCEPT_EULA=Y
+      - PRIVACY_CONSENT=Y
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=all
+    volumes:
+      - ..:/workspace:rw
+      # Mount X11 for GUI access
+      - /tmp/.X11-unix:/tmp/.X11-unix
+      - ~/.Xauthority:/root/.Xauthority:rw  
+      # PERSISTENT CACHE (Crucial for performance)
+      - ~/docker/isaac-sim/cache/kit:/root/.cache/ov:rw
+      - ~/docker/isaac-sim/cache/warp:/root/.cache/warp:rw
+    stdin_open: true
+    tty: true

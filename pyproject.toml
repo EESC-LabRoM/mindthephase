@@ -1,0 +1,150 @@
+[build-system]
+requires = ["setuptools", "toml"]
+build-backend = "setuptools.build_meta"
+
+[tool.isort]
+
+atomic = true
+profile = "black"
+line_length = 120
+py_version = 311
+skip_glob = ["docs/*", "logs/*"]
+group_by_package = true
+
+sections = [
+  "FUTURE",
+  "STDLIB",
+  "THIRDPARTY",
+  "ISAACLABPARTY",
+  "FIRSTPARTY",
+  "LOCALFOLDER",
+]
+extra_standard_library = [
+  "numpy",
+  "h5py",
+  "open3d",
+  "torch",
+  "tensordict",
+  "bpy",
+  "matplotlib",
+  "gymnasium",
+  "gym",
+  "scipy",
+  "hid",
+  "yaml",
+  "prettytable",
+  "toml",
+  "trimesh",
+  "tqdm",
+  "psutil",
+]
+known_thirdparty = [
+  "isaacsim.core.api",
+  "omni.replicator.core",
+  "pxr",
+  "omni.kit.*",
+  "warp",
+  "carb",
+  "Semantics",
+]
+known_isaaclabparty = [
+  "isaaclab",
+  "isaaclab_tasks",
+  "isaaclab_assets",
+  "isaaclab_mimic",
+  "isaaclab_rl",
+]
+
+known_firstparty = "mind"
+known_local_folder = "config"
+
+[tool.pyright]
+
+exclude = ["**/__pycache__", "**/docs", "**/logs", ".git", ".vscode"]
+
+typeCheckingMode = "basic"
+pythonVersion = "3.10"
+pythonPlatform = "Linux"
+enableTypeIgnoreComments = true
+reportMissingImports = "none"
+reportMissingModuleSource = "none"
+reportGeneralTypeIssues = "none"
+reportOptionalMemberAccess = "warning"
+reportPrivateUsage = "warning"
+
+extraPaths = [
+  "IsaacLab/source/isaaclab_assets",
+  "IsaacLab/source/isaaclab",
+  "IsaacLab/source/isaaclab_rl",
+  "IsaacLab/source/isaaclab_mimic",
+  "IsaacLab/source/isaaclab_contrib",
+  "IsaacLab/source/isaaclab_tasks",
+]
+
+[[tool.uv.index]]
+url = "https://pypi.nvidia.com/"
+
+[tool.ruff]
+
+line-length = 120
+
+target-version = "py311"
+
+[tool.ruff.lint]
+
+dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
+
+select = [
+  "E",      # pycodestyle errors
+  "F",      # pyflakes
+  "D101",
+  "D102",
+  "D2",
+  "D3",
+  "D402",
+  "D404",
+  "D419",
+  "SLF001", # https://docs.astral.sh/ruff/rules/#flake8-self-slf
+  "RET501",
+  "RET502",
+  "RET503", # https://docs.astral.sh/ruff/rules/#flake8-return-ret
+  "RUF",    # https://docs.astral.sh/ruff/rules/#ruff-specific-rules-ruf
+  "PLC",
+  "PLE",
+  "PLW",    # https://docs.astral.sh/ruff/rules/#pylint-pl
+  "PIE",    # https://docs.astral.sh/ruff/rules/#flake8-pie-pie
+  "FLY",
+]
+
+[tool.ruff.lint.mccabe]
+max-complexity = 10
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint.flake8-bugbear]
+extend-immutable-calls = ["gtsam.Pose3"]
+
+
+[project]
+name = "mind"
+version = "0.1.0"
+description = "IsaacLab extension for mind training code."
+requires-python = "==3.11.*"
+dependencies = [
+  "isaaclab[all,isaacsim]==2.3.2.post1",
+  "onnxruntime>=1.24.4",
+  "pandas>=3.0.1",
+  "psutil>=5.9.8",
+  "setuptools==81.0.0",
+  "tensorboard>=2.20.0",
+  "python-dotenv>=1.0.0",
+  "wandb>=0.25.1",
+]
+
+
+[tool.setuptools]
+packages = ["mind"]
+
+[tool.setuptools.package-dir]
+"" = "source/mind"

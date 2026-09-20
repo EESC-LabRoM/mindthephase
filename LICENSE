@@ -1,0 +1,11 @@
+## License
+
+Except where otherwise noted, the original code in this repository is
+licensed under the Apache License 2.0.
+
+The code under `source/mind/mind/actuators` and `source/mind/mind/assets` is derived from software developed by
+Robotics and AI Institute LLC dba RAI Institute and is subject to the
+RAI Institute Research License. 
+
+The code under `scripts/rsl_rl` is subjected to the IsaacLab license.
+
