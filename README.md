@@ -26,7 +26,7 @@ TODO: include the code to setup investigator
 
 ## Repository Organization
 
-The main Python package is located at `source/relic/relic/`. The project functionalities are organized into the following key directories:
+The main Python package is located at `source/mind/mind/`. The project functionalities are organized into the following key directories:
 
 - `tasks/`: Contains implementations for the Reinforcement Learning tasks (e.g., `locomotion`). Each task directory typically contains:
   - `config/`: Environment configurations tailored for specific robots (e.g., `spot`).
