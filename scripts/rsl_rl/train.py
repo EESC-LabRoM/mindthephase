@@ -89,9 +89,13 @@ from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlVecEnvWrapper
 from isaaclab_tasks.utils import get_checkpoint_path
 from isaaclab_tasks.utils.hydra import hydra_task_config
 
-# Import extensions to set up environment tasks
-import mind.tasks  # noqa: F401
-from investigator import Investigator, InvestigatorCfg
+# Import the standard IsaacLab tasks. Register MyRelic tasks only when requested.
+import isaaclab_tasks  # noqa: F401  # registers the built-in IsaacLab tasks
+if args_cli.task and (
+    args_cli.task.startswith("Isaac-Spot-Locomotion-") or args_cli.task.endswith("-Simba-v0")
+):
+    import mind.tasks  # noqa: F401
+from investigator import Investigator, InvestigatorCfg, make_contact_phase_fn
 
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
@@ -200,8 +204,14 @@ def main(
     threading.Thread(target=_save_configs, daemon=True).start()
 
     # -- Investigator setup (representation rank analysis) --
-    investigator = Investigator(runner, cfg=InvestigatorCfg())
-    investigator.install(sort_fn=lambda obs: obs[:, 9:12].norm(dim=-1))
+    is_spot_task = args_cli.task.startswith("Isaac-Spot-Locomotion-")
+    investigator = Investigator(runner, cfg=InvestigatorCfg(spot_labels=is_spot_task))
+    phase_fn, phase_contact_count = make_contact_phase_fn(env, args_cli.task)
+    investigator.install(
+        sort_fn=(lambda obs: obs[:, 9:12].norm(dim=-1)) if is_spot_task else None,
+        phase_fn=phase_fn,
+        phase_contact_count=phase_contact_count,
+    )
 
     # run training
     runner.learn(

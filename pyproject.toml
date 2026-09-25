@@ -132,7 +132,12 @@ version = "0.1.0"
 description = "IsaacLab extension for mind training code."
 requires-python = "==3.11.*"
 dependencies = [
-  "isaaclab[all,isaacsim]==2.3.2.post1",
+  "isaaclab==0.47.2",
+  "isaaclab-assets==0.2.3",
+  "isaaclab-tasks==0.11.6",
+  "isaaclab-rl[rsl-rl]==0.4.4",
+  "isaacsim[all,extscache]==5.1.0.0",
+  "rsl-rl-lib==3.0.1",
   "onnxruntime>=1.24.4",
   "pandas>=3.0.1",
   "psutil>=5.9.8",
@@ -141,6 +146,15 @@ dependencies = [
   "python-dotenv>=1.0.0",
   "wandb>=0.25.1",
 ]
+
+[tool.uv.sources]
+isaaclab = { path = "IsaacLab/source/isaaclab", editable = true }
+isaaclab-assets = { path = "IsaacLab/source/isaaclab_assets", editable = true }
+isaaclab-tasks = { path = "IsaacLab/source/isaaclab_tasks", editable = true }
+isaaclab-rl = { path = "IsaacLab/source/isaaclab_rl", editable = true }
+
+[tool.uv]
+build-constraint-dependencies = ["setuptools<81"]
 
 
 [tool.setuptools]
