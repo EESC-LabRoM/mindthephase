@@ -11,7 +11,8 @@ To install this project, you can use the `uv` package manager.
 2. **Install dependencies**
 
     ```bash
-    uv sync
+    git submodule update --init IsaacLab-upstream
+    uv sync --locked
     ```
 
 ## Train and Play
@@ -22,7 +23,33 @@ uv run scripts/rsl_rl/play.py --task Isaac-Spot-Locomotion-Play-v0 --center
 ```
 
 TODO: include the weights used for deploying
-TODO: include the code to setup investigator
+
+## ANYmal D, G1, and Spot with Investigator
+
+The local training script attaches [Investigator](scripts/rsl_rl/investigator.py) automatically.
+
+```bash
+uv run scripts/rsl_rl/train.py \
+  --task Isaac-Velocity-Rough-Anymal-D-v0 --headless
+
+uv run scripts/rsl_rl/train.py \
+  --task Isaac-Velocity-Rough-G1-v0 --headless
+```
+
+For the Simba variations:
+
+```bash
+uv run scripts/rsl_rl/train.py \
+  --task Isaac-Velocity-Rough-Anymal-D-Simba-v0 --headless
+
+uv run scripts/rsl_rl/train.py \
+  --task Isaac-Velocity-Rough-G1-Simba-v0 --headless
+
+uv run scripts/rsl_rl/train.py \
+  --task Isaac-Spot-Locomotion-Simba-v0 --headless
+```
+
+When the task's contact sensor exposes the expected feet, Investigator also logs contact-conditioned metrics every 500 iterations. It groups current observations by the number of feet with upward contact force above 1 N, then measures feature, Gram, and Jacobian ranks per group in `phase_rank_timeseries.csv` and `history.json`.
 
 ## Repository Organization
 
@@ -39,4 +66,3 @@ The main Python package is located at `source/relic/relic/`. The project functio
 We use RSL_RL for RL training and adapt the following scripts from [IsaacLabExtensionTemplate](https://github.com/isaac-sim/IsaacLabExtensionTemplate/tree/main?tab=readme-ov-file#installation).
 
 Spot simulation was based on the [Relic](https://github.com/rai-opensource/relic) setup.
-

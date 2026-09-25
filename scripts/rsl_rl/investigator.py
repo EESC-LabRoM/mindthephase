@@ -16,6 +16,7 @@ Designed for rsl_rl with IsaacLab. Actor/Critic accessed via runner.alg.policy.a
 from __future__ import annotations
 
 import json
+import csv
 import warnings
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
@@ -85,6 +86,72 @@ OBS_GROUPS = [
     ("last_act", 37, 49),
 ]
 
+# Contact-count groups used for phase-conditioned rank measurements.
+PHASE_GROUPS = {
+    4: {
+        "pooled": None,
+        "stance": (3, 4),
+        "swing": (0, 1),
+        "double_support": (2,),
+    },
+    2: {
+        "pooled": None,
+        "flight": (0,),
+        "single_support": (1,),
+        "double_support": (2,),
+    },
+}
+
+CONTACT_COUNT_LABELS = {
+    4: ("flight", "swing_dominant", "double_support", "stance_dominant", "full_stance"),
+    2: ("flight", "single_support", "double_support"),
+}
+
+PHASE_CSV_FIELDS = (
+    "global_step", "phase", "sample_count", "valid", "feature_erank",
+    "pca_rank_99", "gram_erank", "jacobian_erank",
+    "jacobian_local_erank_mean", "jacobian_local_erank_std", "jacobian_dof_gap",
+)
+
+
+def make_contact_phase_fn(env, task_name: str | None):
+    """Find a task's foot contacts and return a support-count callback."""
+    if not task_name:
+        return None, None
+    if "Anymal-D" in task_name:
+        pattern, expected = ".*FOOT", 4
+    elif "G1" in task_name:
+        pattern, expected = ".*_ankle_roll_link", 2
+    elif "Spot-Locomotion" in task_name:
+        pattern, expected = ".*_foot", 4
+    else:
+        return None, None
+
+    sensor = env.unwrapped.scene.sensors.get("contact_forces")
+    if sensor is None:
+        warnings.warn(f"[Investigator] {task_name}: contact_forces sensor unavailable; phase metrics disabled.")
+        return None, None
+    try:
+        foot_ids, foot_names = sensor.find_bodies(pattern)
+    except ValueError as error:
+        warnings.warn(f"[Investigator] {task_name}: {error}; phase metrics disabled.")
+        return None, None
+    if len(foot_ids) != expected:
+        warnings.warn(
+            f"[Investigator] {task_name}: expected {expected} feet matching {pattern!r}, "
+            f"found {foot_names}; phase metrics disabled."
+        )
+        return None, None
+
+    ids = torch.tensor(foot_ids, dtype=torch.long, device=env.unwrapped.device)
+
+    def phase_fn(current_env):
+        forces = current_env.unwrapped.scene.sensors["contact_forces"].data.net_forces_w
+        return forces[:, ids, 2].gt(1.0).sum(dim=-1)
+
+    print(f"[Investigator] Phase contacts: {', '.join(foot_names)}")
+    return phase_fn, expected
+
 
 # ===================================================================
 # Configuration
@@ -95,6 +162,8 @@ class InvestigatorCfg:
     """All knobs for the Investigator."""
 
     enabled: bool = True
+    spot_labels: bool = True
+    """Use Spot-specific action and observation labels in Jacobian plots."""
 
     # -- Cadence --
     log_interval: int = 100
@@ -149,6 +218,12 @@ class InvestigatorCfg:
     # -- Thresholds --
     dead_neuron_threshold: float = 1e-1
     erank_eps: float = 1e-10
+
+    # -- Gait phase metrics --
+    phase_log_enabled: bool = True
+    """Measure representation ranks by foot-contact count when a contact sensor is available."""
+    min_samples_per_phase: int = 128
+    """Minimum observations needed for a phase's rank estimates."""
 
     # -- Scrape from rsl_rl's learn() locals for post-hoc comparison --
     # Scalars (float/int) go as-is. Deques/lists are reduced with mean.
@@ -254,6 +329,7 @@ class Investigator:
         self._fixed_eval_obs: torch.Tensor | None = None
         self._sort_indices: torch.Tensor | None = None
         self._phase_fn: callable | None = None
+        self._phase_contact_count: int | None = None
         self._log_dir: Path | None = None
         self._history: dict[str, list] = {}
         self._installed = False
@@ -263,7 +339,8 @@ class Investigator:
     # ---------------------------------------------------------
 
     def install(self, sort_fn: callable | None = None,
-                phase_fn: callable | None = None):
+                phase_fn: callable | None = None,
+                phase_contact_count: int | None = None):
         """Monkey-patch runner.learn() to inject analysis hooks.
 
         Args:
@@ -271,15 +348,16 @@ class Investigator:
                      Sorts Gram matrix rows for visible block structure.
                      Example: lambda obs: obs[:, 9:12].norm(dim=-1)
             phase_fn: Optional callable(env) -> Tensor[int] of shape [num_envs].
-                      Returns a phase label per environment for phase-conditioned
-                      Jacobian analysis. Labels re-queried each checkpoint.
-                      Example: lambda env: env.scene["contact_sensor"].data
-                               .net_forces_w[:, :, 2].gt(1.0).sum(dim=-1)
+                      Returns the number of feet in contact per environment.
+            phase_contact_count: Number of tracked feet (2 or 4), required with phase_fn.
         """
         if not self.cfg.enabled or self._installed:
             return
 
+        if phase_fn is not None and phase_contact_count not in PHASE_GROUPS:
+            raise ValueError("Phase metrics require 2 or 4 tracked contact points.")
         self._phase_fn = phase_fn
+        self._phase_contact_count = phase_contact_count
 
         runner = self.runner
 
@@ -492,6 +570,7 @@ class Investigator:
     def _compute_live_metrics(self, iteration: int):
         actor = self._get_actor()
         obs = self.runner.alg.policy.get_actor_obs(self.runner.env.get_observations()).to(self.device)
+        obs = self._normalize_actor_obs(obs)
         metrics = {}
 
         with torch.no_grad():
@@ -575,7 +654,7 @@ class Investigator:
 
     def _compute_checkpoint_metrics(self, iteration: int):
         actor = self._get_actor()
-        eval_obs = self._fixed_eval_obs.to(self.device)
+        eval_obs = self._normalize_actor_obs(self._fixed_eval_obs.to(self.device))
         metrics = {}
 
         # -- Gram matrix + feature erank on fixed eval obs --
@@ -678,20 +757,12 @@ class Investigator:
                     metrics["investigator/jacobian/std_heatmap"] = wandb.Image(fig)
                     plt.close(fig)
 
-        # -- Phase-conditioned Jacobian --
-        if self._phase_fn is not None and jac_er is not None:
+        # Phase labels and observations must come from the same live environment state.
+        if self.cfg.phase_log_enabled and self._phase_fn is not None:
             try:
-                phases = self._phase_fn(self.runner.env)[:self.cfg.jacobian_batch_size]
-                phases = phases.to(jac_obs.device)
-                for p in phases.unique():
-                    mask = phases == p
-                    if mask.sum() >= 16:
-                        er_p, _, _, _, _ = self._compute_jacobian_erank(
-                            actor, jac_obs[mask])
-                        if er_p is not None:
-                            metrics[f"investigator/policy/jacobian_erank_phase{p.item()}"] = er_p
+                self._compute_phase_metrics(iteration, metrics)
             except Exception as e:
-                warnings.warn(f"[Investigator] Phase Jacobian failed: {e}")
+                warnings.warn(f"[Investigator] Phase metrics failed: {e}")
 
         # [WANDB INTEGRATION] per-layer weight heatmap image
         if self.cfg.wandb_weight_heatmap and _WANDB_AVAILABLE and wandb.run:
@@ -709,6 +780,86 @@ class Investigator:
             torch.save(weights, self._log_dir / f"spectra/actor_weights_{iteration}.pt")
 
         self._log_metrics(metrics, iteration)
+
+    def _compute_phase_metrics(self, iteration: int, metrics: dict) -> None:
+        """Measure ranks on live observations grouped by simultaneous foot contacts."""
+        raw_obs = self.runner.alg.policy.get_actor_obs(
+            self.runner.env.get_observations()
+        ).to(self.device)
+        phases = self._phase_fn(self.runner.env).to(self.device).long()
+        if phases.ndim != 1 or phases.shape[0] != raw_obs.shape[0]:
+            raise ValueError("Contact counts must have one value per live observation.")
+        if ((phases < 0) | (phases > self._phase_contact_count)).any():
+            raise ValueError("Contact count exceeds the number of tracked feet.")
+
+        obs = self._normalize_actor_obs(raw_obs.detach())
+        actor = self._get_actor()
+        n_feet = self._phase_contact_count
+        for count, label in enumerate(CONTACT_COUNT_LABELS[n_feet]):
+            metrics[f"investigator_phase/dist/frac_{label}"] = (
+                (phases == count).float().mean().item()
+            )
+        metrics["investigator/robot/n_dof"] = float(
+            _find_linear_layers(actor)[-1][1].out_features
+        )
+
+        total_steps = iteration * self.runner.num_steps_per_env * self.runner.env.num_envs
+        rows = []
+        for alias, counts in PHASE_GROUPS[n_feet].items():
+            mask = torch.ones_like(phases, dtype=torch.bool) if counts is None else torch.isin(
+                phases, torch.tensor(counts, device=phases.device)
+            )
+            phase_obs = obs[mask]
+            n_samples = phase_obs.shape[0]
+            valid = int(n_samples >= self.cfg.min_samples_per_phase)
+            metrics[f"investigator_phase/{alias}/sample_count"] = float(n_samples)
+            metrics[f"investigator_phase/{alias}/valid_rank_eval"] = float(valid)
+            row = {field: float("nan") for field in PHASE_CSV_FIELDS}
+            row.update(global_step=total_steps, phase=alias, sample_count=n_samples, valid=valid)
+
+            if valid:
+                with torch.no_grad():
+                    features = self._extract_penultimate_features(actor, phase_obs)
+                    if features is not None:
+                        singular_values = torch.linalg.svdvals(features)
+                        feature_erank = effective_rank(singular_values, self.cfg.erank_eps)
+                        pca = pca_rank(singular_values)
+                        metrics[f"investigator_phase/{alias}/actor/feature_erank"] = feature_erank
+                        metrics[f"investigator_phase/{alias}/actor/pca_rank_99"] = float(pca)
+                        row["feature_erank"] = feature_erank
+                        row["pca_rank_99"] = pca
+
+                    gram_features = self._extract_penultimate_features(actor, phase_obs[:512])
+                    if gram_features is not None:
+                        gram = compute_gram_cosine(gram_features)
+                        gram_erank = effective_rank(torch.linalg.svdvals(gram), self.cfg.erank_eps)
+                        metrics[f"investigator_phase/{alias}/gram/erank"] = gram_erank
+                        row["gram_erank"] = gram_erank
+
+                jac_erank, _, _, _, per_sample = self._compute_jacobian_erank(
+                    actor, phase_obs[:self.cfg.jacobian_batch_size]
+                )
+                if jac_erank is not None:
+                    metrics[f"investigator_phase/{alias}/policy/jacobian_erank"] = jac_erank
+                    dof_gap = metrics["investigator/robot/n_dof"] - jac_erank
+                    metrics[f"investigator_phase/{alias}/policy/jacobian_dof_gap"] = dof_gap
+                    row["jacobian_erank"] = jac_erank
+                    row["jacobian_dof_gap"] = dof_gap
+                if per_sample is not None:
+                    mean = per_sample.mean().item()
+                    std = per_sample.std().item()
+                    metrics[f"investigator_phase/{alias}/policy/jacobian_local_erank_mean"] = mean
+                    metrics[f"investigator_phase/{alias}/policy/jacobian_local_erank_std"] = std
+                    row["jacobian_local_erank_mean"] = mean
+                    row["jacobian_local_erank_std"] = std
+            rows.append(row)
+
+        csv_path = self._log_dir / "phase_rank_timeseries.csv"
+        with open(csv_path, "a", newline="") as file:
+            writer = csv.DictWriter(file, fieldnames=PHASE_CSV_FIELDS)
+            if file.tell() == 0:
+                writer.writeheader()
+            writer.writerows(rows)
 
     # ---------------------------------------------------------
     # Feature extraction via hooks
@@ -854,8 +1005,22 @@ class Investigator:
     def _get_actor(self) -> nn.Module:
         return self.runner.alg.policy.actor
 
+    def _normalize_actor_obs(self, obs: torch.Tensor) -> torch.Tensor:
+        """Feed metrics the same actor inputs used by RSL RL's policy."""
+        normalizer = getattr(self.runner.alg.policy, "actor_obs_normalizer", None)
+        if normalizer is None:
+            return obs
+        with torch.no_grad():
+            return normalizer(obs)
+
     def _get_critic(self) -> nn.Module:
         return self.runner.alg.policy.critic
+
+    def _plot_labels(self, action_dim: int, obs_dim: int):
+        """Only label the known Spot layout with Spot joint and observation names."""
+        if self.cfg.spot_labels and action_dim == len(ACTION_LABELS) and obs_dim == OBS_GROUPS[-1][2]:
+            return ACTION_LABELS, OBS_GROUPS
+        return [f"a{i}" for i in range(action_dim)], []
 
     # ---------------------------------------------------------
     # Logging
@@ -1015,8 +1180,7 @@ class Investigator:
         a_dim, o_dim = J_np.shape
 
         # Row labels (actions)
-        row_labels = ACTION_LABELS[:a_dim] if a_dim <= len(ACTION_LABELS) \
-            else [f"a{i}" for i in range(a_dim)]
+        row_labels, obs_groups = self._plot_labels(a_dim, o_dim)
 
         # Figure: natural aspect ratio (short & wide for 12 x 49)
         w = max(6.5, o_dim / 6)
@@ -1036,7 +1200,7 @@ class Investigator:
 
         # Obs group separators and labels
         group_ticks = []
-        for gname, g_start, g_end in OBS_GROUPS:
+        for gname, g_start, g_end in obs_groups:
             if g_start < o_dim:
                 mid = (g_start + min(g_end, o_dim)) / 2
                 group_ticks.append((mid, gname))
@@ -1049,8 +1213,9 @@ class Investigator:
                                fontsize=6, rotation=30, ha="right")
 
         # Leg group separators (every 3 actions)
-        for i in range(3, a_dim, 3):
-            ax.axhline(i - 0.5, color="k", linewidth=0.5, alpha=0.4)
+        if obs_groups:
+            for i in range(3, a_dim, 3):
+                ax.axhline(i - 0.5, color="k", linewidth=0.5, alpha=0.4)
 
         ax.set_title(f"Jacobian -- iter {iteration}  |  "
                      f"erank = {erank_val:.1f}", fontsize=9)
@@ -1069,8 +1234,7 @@ class Investigator:
         J_np = J_std.numpy()
         a_dim, o_dim = J_np.shape
 
-        row_labels = ACTION_LABELS[:a_dim] if a_dim <= len(ACTION_LABELS) \
-            else [f"a{i}" for i in range(a_dim)]
+        row_labels, obs_groups = self._plot_labels(a_dim, o_dim)
 
         w = max(6.5, o_dim / 6)
         h = max(2.5, a_dim / 3)
@@ -1084,7 +1248,7 @@ class Investigator:
         ax.set_yticklabels(row_labels, fontsize=7)
 
         group_ticks = []
-        for gname, g_start, g_end in OBS_GROUPS:
+        for gname, g_start, g_end in obs_groups:
             if g_start < o_dim:
                 mid = (g_start + min(g_end, o_dim)) / 2
                 group_ticks.append((mid, gname))
@@ -1096,8 +1260,9 @@ class Investigator:
             ax.set_xticklabels([l for _, l in group_ticks],
                                fontsize=6, rotation=30, ha="right")
 
-        for i in range(3, a_dim, 3):
-            ax.axhline(i - 0.5, color="w", linewidth=0.5, alpha=0.4)
+        if obs_groups:
+            for i in range(3, a_dim, 3):
+                ax.axhline(i - 0.5, color="w", linewidth=0.5, alpha=0.4)
 
         ax.set_title(f"Jacobian Std -- iter {iteration}", fontsize=9)
         div = make_axes_locatable(ax)
@@ -1327,19 +1492,19 @@ class Investigator:
                       interpolation="nearest")
             ax.set_title(f"iter {it}\ner={er:.1f}", fontsize=8)
 
-            row_labels = ACTION_LABELS[:a_dim] if a_dim <= len(ACTION_LABELS) \
-                else [f"a{i}" for i in range(a_dim)]
+            row_labels, obs_groups = self._plot_labels(a_dim, o_dim)
             ax.set_yticks(range(a_dim))
             ax.set_yticklabels(row_labels, fontsize=5)
             ax.tick_params(axis="x", labelsize=5)
 
             # Obs group separators
-            for _, g_start, _ in OBS_GROUPS:
+            for _, g_start, _ in obs_groups:
                 if 0 < g_start < o_dim:
                     ax.axvline(g_start - 0.5, color="k",
                                linewidth=0.4, alpha=0.3)
-            for i in range(3, a_dim, 3):
-                ax.axhline(i - 0.5, color="k", linewidth=0.4, alpha=0.3)
+            if obs_groups:
+                for i in range(3, a_dim, 3):
+                    ax.axhline(i - 0.5, color="k", linewidth=0.4, alpha=0.3)
 
         fig.suptitle("Jacobian Evolution", fontsize=11)
         fig.tight_layout()

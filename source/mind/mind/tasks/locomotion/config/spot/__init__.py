@@ -19,6 +19,16 @@ gym.register(
 )
 
 gym.register(
+    id="Isaac-Spot-Locomotion-Simba-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": spot_env_cfg.SpotLocomotionEnvCfg,
+        "rsl_rl_cfg_entry_point": agents.simba_rsl_rl_cfg.SpotLocomotionSimbaPPORunnerCfg,
+    },
+)
+
+gym.register(
     id="Isaac-Spot-Locomotion-Play-v0",
     entry_point="isaaclab.envs:ManagerBasedRLEnv",
     disable_env_checker=True,
