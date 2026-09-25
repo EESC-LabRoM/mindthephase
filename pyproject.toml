@@ -148,10 +148,10 @@ dependencies = [
 ]
 
 [tool.uv.sources]
-isaaclab = { path = "IsaacLab-upstream/source/isaaclab", editable = true }
-isaaclab-assets = { path = "IsaacLab-upstream/source/isaaclab_assets", editable = true }
-isaaclab-tasks = { path = "IsaacLab-upstream/source/isaaclab_tasks", editable = true }
-isaaclab-rl = { path = "IsaacLab-upstream/source/isaaclab_rl", editable = true }
+isaaclab = { path = "IsaacLab/source/isaaclab", editable = true }
+isaaclab-assets = { path = "IsaacLab/source/isaaclab_assets", editable = true }
+isaaclab-tasks = { path = "IsaacLab/source/isaaclab_tasks", editable = true }
+isaaclab-rl = { path = "IsaacLab/source/isaaclab_rl", editable = true }
 
 [tool.uv]
 build-constraint-dependencies = ["setuptools<81"]

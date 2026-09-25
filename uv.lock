@@ -1088,7 +1088,7 @@ wheels = [
 [[package]]
 name = "isaaclab"
 version = "0.47.2"
-source = { editable = "IsaacLab-upstream/source/isaaclab" }
+source = { editable = "IsaacLab/source/isaaclab" }
 dependencies = [
     { name = "dex-retargeting", marker = "platform_machine in 'x86_64,AMD64' and sys_platform == 'linux'" },
     { name = "einops" },
@@ -1141,12 +1141,12 @@ requires-dist = [
 [[package]]
 name = "isaaclab-assets"
 version = "0.2.3"
-source = { editable = "IsaacLab-upstream/source/isaaclab_assets" }
+source = { editable = "IsaacLab/source/isaaclab_assets" }
 
 [[package]]
 name = "isaaclab-rl"
 version = "0.4.4"
-source = { editable = "IsaacLab-upstream/source/isaaclab_rl" }
+source = { editable = "IsaacLab/source/isaaclab_rl" }
 dependencies = [
     { name = "h5py" },
     { name = "hydra-core" },
@@ -1200,7 +1200,7 @@ provides-extras = ["sb3", "skrl", "rl-games", "rsl-rl", "rl-games", "rsl-rl", "a
 [[package]]
 name = "isaaclab-tasks"
 version = "0.11.6"
-source = { editable = "IsaacLab-upstream/source/isaaclab_tasks" }
+source = { editable = "IsaacLab/source/isaaclab_tasks" }
 dependencies = [
     { name = "numba" },
     { name = "numpy" },
@@ -1863,10 +1863,10 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "isaaclab", editable = "IsaacLab-upstream/source/isaaclab" },
-    { name = "isaaclab-assets", editable = "IsaacLab-upstream/source/isaaclab_assets" },
-    { name = "isaaclab-rl", extras = ["rsl-rl"], editable = "IsaacLab-upstream/source/isaaclab_rl" },
-    { name = "isaaclab-tasks", editable = "IsaacLab-upstream/source/isaaclab_tasks" },
+    { name = "isaaclab", editable = "IsaacLab/source/isaaclab" },
+    { name = "isaaclab-assets", editable = "IsaacLab/source/isaaclab_assets" },
+    { name = "isaaclab-rl", extras = ["rsl-rl"], editable = "IsaacLab/source/isaaclab_rl" },
+    { name = "isaaclab-tasks", editable = "IsaacLab/source/isaaclab_tasks" },
     { name = "isaacsim", extras = ["all", "extscache"], specifier = "==5.1.0.0" },
     { name = "onnxruntime", specifier = ">=1.24.4" },
     { name = "pandas", specifier = ">=3.0.1" },
