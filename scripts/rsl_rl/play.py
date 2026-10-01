@@ -68,7 +68,7 @@ from isaaclab_rl.rsl_rl import (
     export_policy_as_jit,
     export_policy_as_onnx,
 )
-from isaaclab_tasks.utils import get_checkpoint_path, parse_env_cfg
+from isaaclab_tasks.utils import parse_env_cfg
 from rsl_rl.runners import OnPolicyRunner
 from tqdm import tqdm
 
@@ -100,8 +100,8 @@ def main():
         # flat layout: logs/rsl_rl/{run_name}/
         log_root_path = os.path.abspath(os.path.join("logs", "rsl_rl"))
         print(f"[INFO] Loading experiment from directory: {log_root_path}")
-        resume_path = get_checkpoint_path(
-            log_root_path, agent_cfg.load_run, agent_cfg.load_checkpoint
+        resume_path = cli_args.find_checkpoint(
+            log_root_path, args_cli.task, agent_cfg.load_run, agent_cfg.load_checkpoint
         )
     log_dir = os.path.dirname(resume_path)
 

@@ -6,6 +6,8 @@
 from __future__ import annotations
 
 import argparse
+import os
+import re
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -37,7 +39,10 @@ def add_rsl_rl_args(parser: argparse.ArgumentParser):
     )
     # -- load arguments
     arg_group.add_argument(
-        "--resume", type=bool, default=None, help="Whether to resume from a checkpoint."
+        "--resume",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Whether to resume from a checkpoint (--resume / --no-resume).",
     )
     arg_group.add_argument(
         "--load_run",
@@ -86,6 +91,44 @@ def parse_rsl_rl_cfg(
     return rslrl_cfg
 
 
+TASK_FILE = os.path.join("params", "task.txt")
+"""Per-run file recording the training task id, written by train.py."""
+
+
+def training_task(task_name: str) -> str:
+    """Map a play task id to the training task whose checkpoints it loads."""
+    return task_name.replace("-Play-v", "-v")
+
+
+def find_checkpoint(log_root: str, task_name: str, load_run: str, checkpoint: str) -> str:
+    """Resolve a checkpoint in the flat ``logs/rsl_rl/<run>/`` layout.
+
+    The most recently modified run whose name matches ``load_run`` and whose
+    recorded training task matches ``task_name`` is selected, so runs of other tasks
+    and analysis directories are never picked by default. Within it, the newest
+    checkpoint matching ``checkpoint`` is returned (``model_10`` after ``model_9``).
+    """
+    task = training_task(task_name)
+    candidates = []
+    for entry in os.scandir(log_root):
+        task_file = os.path.join(entry.path, TASK_FILE)
+        if not (entry.is_dir() and re.match(load_run, entry.name) and os.path.isfile(task_file)):
+            continue
+        with open(task_file) as f:
+            if f.read().strip() == task:
+                candidates.append(entry)
+    if not candidates:
+        raise ValueError(
+            f"No run in {log_root} matches --load_run {load_run!r} with task {task!r} "
+            f"(recorded in <run>/{TASK_FILE}). Pass --checkpoint <path> for older runs."
+        )
+    run = max(candidates, key=lambda e: e.stat().st_mtime)
+    models = [f for f in os.listdir(run.path) if re.match(checkpoint, f)]
+    if not models:
+        raise ValueError(f"No checkpoints in {run.path} match {checkpoint!r}.")
+    return os.path.join(run.path, max(models, key=lambda m: f"{m:0>15}"))
+
+
 def update_rsl_rl_cfg(agent_cfg: RslRlOnPolicyRunnerCfg, args_cli: argparse.Namespace):
     """Update configuration for RSL-RL agent based on inputs.
 
@@ -113,5 +156,12 @@ def update_rsl_rl_cfg(agent_cfg: RslRlOnPolicyRunnerCfg, args_cli: argparse.Name
     if agent_cfg.logger in {"wandb", "neptune"} and args_cli.log_project_name:
         agent_cfg.wandb_project = args_cli.log_project_name
         agent_cfg.neptune_project = args_cli.log_project_name
+    if agent_cfg.logger == "wandb":
+        # train.py rejects a missing project; playback never opens a W&B run.
+        agent_cfg.wandb_project = args_cli.log_project_name or os.environ.get("WANDB_PROJECT")
+        entity = os.environ.get("WANDB_ENTITY")
+        if entity:
+            # RSL-RL 3.0.1 reads WANDB_USERNAME rather than a config entity.
+            os.environ["WANDB_USERNAME"] = entity
 
     return agent_cfg

@@ -37,7 +37,6 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 import os
-import re
 
 from matplotlib.collections import LineCollection
 import pandas as pd
@@ -188,15 +187,6 @@ _DEFAULT_RANK_METRICS = [
 ]
 
 
-def _load_api_key_from_cfg() -> str | None:
-    """Fallback: read WANDB_API_KEY from rsl_rl_cfg.py."""
-    cfg = (Path(__file__).resolve().parent.parent.parent
-           / "source/mind/mind/tasks/locomotion"
-             "/config/spot/agents/rsl_rl_cfg.py")
-    if not cfg.exists():
-        return None
-    m = re.search(r'WANDB_API_KEY.*?["\']([a-f0-9]+)["\']', cfg.read_text())
-    return m.group(1) if m else None
 
 
 def _clean_metric_df(
@@ -224,19 +214,38 @@ def _clean_metric_df(
 def fetch_wandb_perf(
     run_name: str,
     metric: str = "Train/mean_reward",
-    project: str = "mymind",
-    entity: str = "tommaselli",
+    project: str | None = None,
+    entity: str | None = None,
     cache_dir: Path | None = None,
     refresh: bool = False,
 ) -> pd.DataFrame:
     """Fetch a scalar series from wandb.  Returns DataFrame[iteration, value].
 
-    Caches to CSV in *cache_dir* so re-plotting doesn't re-download.
+    The W&B runs are identified by ``<cache_dir>/investigator/wandb_run.json``
+    (written during training; one path per resumed segment) when present;
+    otherwise by a unique display name. Segments are concatenated by step, later
+    segments winning on overlap. Caches to CSV in *cache_dir*, keyed by run IDs.
     """
+    import wandb  # lazy — heavy import
+    from wandb_loader import resolve_run
+
+    run_file = Path(cache_dir) / "investigator" / "wandb_run.json" if cache_dir else None
+    run_paths = json.loads(run_file.read_text())["paths"] if run_file and run_file.exists() else None
+
+    api = None
+    if not run_paths:
+        project = project or os.environ.get("WANDB_PROJECT")
+        entity = entity or os.environ.get("WANDB_ENTITY")
+        if not project or not entity:
+            raise ValueError("Set WANDB_ENTITY and WANDB_PROJECT or supply entity and project.")
+        api = wandb.Api()
+        run_paths = ["/".join(resolve_run(api, entity, project, run_name).path)]
+    run_ids = "_".join(p.rsplit("/", 1)[-1] for p in run_paths)
+
     slug = metric.replace("/", "_").replace(" ", "_")
     cache_path = None
     if cache_dir is not None:
-        cache_path = Path(cache_dir) / f"_wandb_cache_{slug}.csv"
+        cache_path = Path(cache_dir) / f"_wandb_cache_{run_ids}_{slug}.csv"
         if cache_path.exists() and not refresh:
             print(f"[rank-analysis] cache hit: {cache_path}")
             try:
@@ -247,25 +256,13 @@ def fetch_wandb_perf(
                     f"empty: {cache_path}") from e
             return _clean_metric_df(cached, run_name, metric)
 
-    # Ensure API key is set
-    if "WANDB_API_KEY" not in os.environ:
-        key = _load_api_key_from_cfg()
-        if key:
-            os.environ["WANDB_API_KEY"] = key
-
-    import wandb  # lazy — heavy import
-    api = wandb.Api()
-    matched = list(api.runs(f"{entity}/{project}",
-                            filters={"display_name": run_name}))
-    if not matched:
-        raise ValueError(
-            f"wandb run '{run_name}' not found in {entity}/{project}")
-
-    wrun = matched[0]
-    rows = []
-    for row in wrun.scan_history(keys=[metric, "_step"]):
-        if metric in row:
-            rows.append((row.get("_step", len(rows)), row[metric]))
+    api = api or wandb.Api()
+    by_step: dict[int, float] = {}
+    for run_path in run_paths:
+        for row in api.run(run_path).scan_history(keys=[metric, "_step"]):
+            if metric in row and "_step" in row:
+                by_step[row["_step"]] = row[metric]
+    rows = sorted(by_step.items())
 
     result = _clean_metric_df(
         pd.DataFrame(rows, columns=["iteration", "value"]), run_name, metric)
@@ -418,8 +415,8 @@ def plot_rank_analysis_grid(
     df: pd.DataFrame,
     rank_metrics: list[str] | None = None,
     perf_metric: str = "Train/mean_reward",
-    wandb_project: str = "mymind",
-    wandb_entity: str = "tommaselli",
+    wandb_project: str | None = None,
+    wandb_entity: str | None = None,
     convergence_pct: float = 0.15,
     smooth: int = 5,
     save_path: str | Path | None = None,
@@ -517,8 +514,8 @@ def _main():
                    help="Rank metric keys. Default: all erank metrics in data.")
     p.add_argument("--perf-metric", type=str, default="Train/mean_reward",
                    help="Wandb performance metric to fetch.")
-    p.add_argument("--wandb-project", type=str, default="mymind")
-    p.add_argument("--wandb-entity", type=str, default="tommaselli")
+    p.add_argument("--wandb-project", type=str, default=os.environ.get("WANDB_PROJECT"))
+    p.add_argument("--wandb-entity", type=str, default=os.environ.get("WANDB_ENTITY"))
     p.add_argument("--convergence-pct", type=float, default=0.15,
                    help="Tail fraction for convergence stats.")
     p.add_argument("--smooth", type=int, default=5,

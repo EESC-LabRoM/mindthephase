@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import MISSING
 
 import omni.log
@@ -44,9 +45,11 @@ class FixedJointPositionAction(ActionTerm):
         self._raw_actions = torch.empty(self.num_envs, 0, device=self.device)
         self._processed_actions = torch.empty(self.num_envs, 0, device=self.device)
 
-    def reset(self, env_ids: torch.Tensor):
-        # Reload the pose joint to fixe at
-        self._offset = self._asset.data.joint_pos[:, self._joint_ids]
+    def reset(self, env_ids: Sequence[int] | None = None):
+        # Hold the reset environments at their freshly reset pose; leave others untouched.
+        if env_ids is None:
+            env_ids = slice(None)
+        self._offset[env_ids] = self._asset.data.joint_pos[env_ids][:, self._joint_ids]
 
     """
     Properties.

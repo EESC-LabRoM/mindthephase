@@ -31,28 +31,12 @@ import torch.nn.functional as F
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-from matplotlib.colors import TwoSlopeNorm, LinearSegmentedColormap
-from mpl_toolkits.axes_grid1 import make_axes_locatable
+from matplotlib.colors import TwoSlopeNorm
 
-_CMAP_BWY = LinearSegmentedColormap.from_list(
-    'blue_white_yellow', ['#cc0000', 'white', '#FFB300'])
-_CMAP_WY = LinearSegmentedColormap.from_list(
-    'white_yellow', ['white', '#FFB300'])
-
-
-def _gram_colornorm(g_np):
-    """3-color norm/cmap for diagnostic Gram view."""
-    vmin, vmax = g_np.min(), g_np.max()
-    if vmin < 0 < vmax:
-        return TwoSlopeNorm(vmin=vmin, vcenter=0, vmax=vmax), _CMAP_BWY
-    return None, _CMAP_WY
-
-
-def _gram_pattern(g_np):
-    """Clip negatives -> white, sequential yellow. Pattern view (Hu et al.)."""
-    g = np.clip(g_np, 0, None)
-    vmax = g.max() if g.max() > 0 else 1.0
-    return g, None, _CMAP_WY, 0.0, vmax
+from paper_style import (
+    CMAP_DIVERGING, CMAP_SEQUENTIAL, COLUMN_WIDTH, FULL_WIDTH, PALETTE,
+    arch_of, figure_image, paper_name, run_styles, save_figure, style_axes,
+)
 
 # [WANDB INTEGRATION] soft-import; all wandb calls below are gated on _WANDB_AVAILABLE
 _WANDB_AVAILABLE = False
@@ -64,27 +48,74 @@ except ImportError:
 
 
 # ===================================================================
-# Semantic labels (Spot-specific)
+# Policy input/output labels for plots
 # ===================================================================
 
-# Action indices: FL(hx,hy,kn), FR(hx,hy,kn), HL(hx,hy,kn), HR(hx,hy,kn)
-ACTION_LABELS = [
-    "FL_hx", "FL_hy", "FL_kn",
-    "FR_hx", "FR_hy", "FR_kn",
-    "HL_hx", "HL_hy", "HL_kn",
-    "HR_hx", "HR_hy", "HR_kn",
-]
+# Short symbols for observation terms (paper notation); unknown terms use initials.
+OBS_SYMBOLS = {
+    "base_lin_vel": r"$v$",
+    "base_ang_vel": r"$\omega$",
+    "projected_gravity": r"$g$",
+    "velocity_commands": r"$c_v$",
+    "joint_pos": r"$q$",
+    "joint_vel": r"$\dot{q}$",
+    "actions": r"$a_{t-1}$",
+    "last_action": r"$a_{t-1}$",
+    "height_commands": r"$c_h$",
+    "base_orientation_commands": r"$c_\theta$",
+    "height_scan": r"$h$",
+}
 
-# Observation groups: (name, start_idx, end_idx_exclusive)
-OBS_GROUPS = [
-    ("base_vel", 0, 3),
-    ("ang_vel", 3, 6),
-    ("gravity", 6, 9),
-    ("cmd", 9, 13),
-    ("joint_pos", 13, 25),
-    ("joint_vel", 25, 37),
-    ("last_act", 37, 49),
-]
+_JOINT_TOKENS = {"left": "L", "right": "R", "pitch": "P", "roll": "R", "yaw": "Y"}
+
+
+def obs_symbol(term: str) -> str:
+    return OBS_SYMBOLS.get(term, "".join(t[0] for t in term.split("_") if t))
+
+
+def short_joint_name(name: str) -> str:
+    """`fl_hx` -> `FL hx`, `LF_HAA` -> `LF HAA`, `left_hip_pitch_joint` -> `L hip P`."""
+    tokens = [t for t in name.removesuffix("_joint").split("_") if t]
+    out = []
+    for i, t in enumerate(tokens):
+        if t.lower() in _JOINT_TOKENS:
+            out.append(_JOINT_TOKENS[t.lower()])
+        elif i == 0 and len(t) == 2 and len(tokens) > 1:
+            out.append(t.upper())  # leg prefix (fl, rh, ...)
+        else:
+            out.append(t)
+    return " ".join(out)
+
+
+def policy_layout(env, policy, obs_dim: int, action_dim: int) -> dict:
+    """Action joint labels and observation term spans of the actor's input/output.
+
+    Falls back to index labels when the managers do not match the actor's dims.
+    """
+    layout = {"actions": [f"$a_{{{i}}}$" for i in range(action_dim)], "obs_groups": []}
+    base = getattr(env, "unwrapped", env)
+    om = getattr(base, "observation_manager", None)
+    am = getattr(base, "action_manager", None)
+    if om is not None:
+        groups = getattr(policy, "obs_groups", {}).get("policy", ["policy"])
+        spans, start = [], 0
+        for g in groups:
+            for term, shape in zip(om.active_terms[g], om.group_obs_term_dim[g]):
+                dim = int(np.prod(shape))
+                spans.append((obs_symbol(term), start, start + dim))
+                start += dim
+        if start == obs_dim:
+            layout["obs_groups"] = spans
+    if am is not None:
+        names = []
+        for t in am.active_terms:
+            term = am.get_term(t)
+            if term.action_dim:
+                names += list(getattr(term, "_joint_names", []))[:term.action_dim]
+        if len(names) == action_dim:
+            layout["actions"] = [short_joint_name(n) for n in names]
+    return layout
+
 
 # Contact-count groups used for phase-conditioned rank measurements.
 PHASE_GROUPS = {
@@ -122,7 +153,7 @@ def make_contact_phase_fn(env, task_name: str | None):
         pattern, expected = ".*FOOT", 4
     elif "G1" in task_name:
         pattern, expected = ".*_ankle_roll_link", 2
-    elif "Spot-Locomotion" in task_name:
+    elif "Spot" in task_name:
         pattern, expected = ".*_foot", 4
     else:
         return None, None
@@ -162,8 +193,6 @@ class InvestigatorCfg:
     """All knobs for the Investigator."""
 
     enabled: bool = True
-    spot_labels: bool = True
-    """Use Spot-specific action and observation labels in Jacobian plots."""
 
     # -- Cadence --
     log_interval: int = 100
@@ -191,29 +220,23 @@ class InvestigatorCfg:
     save_jacobians: bool = True
     """Save full J_mean matrix (not just SVs) for post-hoc heatmaps."""
 
+    # -- Checkpoint heatmaps: saved to investigator/plots/checkpoints/, and logged to W&B when a run exists --
+    gram_heatmap: bool = True
+    feature_heatmap: bool = True
+    """Feature activation heatmap (samples x head-input units)."""
+    jacobian_heatmap: bool = True
+    """Mean and std Jacobian heatmaps (actions x observations)."""
+    weight_heatmap: bool = True
+    """Per-layer weight heatmaps."""
+
     # -- WandB --
     wandb_log: bool = True
-    wandb_gram_image: bool = True
-    wandb_feature_heatmap: bool = True
-    """Log feature activation heatmap (N x D) as wandb.Image."""
-    wandb_jacobian_heatmap: bool = True
-    """Log Jacobian heatmap (action_dim x obs_dim) as wandb.Image."""
-    wandb_weight_heatmap: bool = True
-    """Log per-layer weight heatmaps as wandb.Image."""
-    wandb_native_plots: bool = False
-    """Deprecated — wandb.plot.* renders as raw tables in recent wandb versions."""
     wandb_spectral_histograms: bool = True
     """Log wandb.Histogram for SV distributions (produces heatmap-over-time)."""
     wandb_artifact_on_end: bool = True
     """Upload investigator/ dir as wandb Artifact at end of training."""
     wandb_summary_on_end: bool = True
     """Write final summary metrics to wandb.run.summary."""
-
-    # -- Plotting (matplotlib fallback) --
-    plot_format: str = "png"
-    plot_dpi: int = 150
-    figsize_gram: tuple[float, float] = (4.0, 4.0)
-    figsize_evolution: tuple[float, float] = (14.0, 5.0)
 
     # -- Thresholds --
     dead_neuron_threshold: float = 1e-1
@@ -254,8 +277,11 @@ def effective_rank(S: torch.Tensor, eps: float = 1e-10) -> float:
 def pca_rank(S: torch.Tensor, threshold: float = 0.99) -> int:
     """Smallest k: top-k singular values explain >= threshold variance."""
     var = S ** 2
-    explained = torch.cumsum(var, dim=0) / var.sum()
-    return torch.searchsorted(explained, threshold).item() + 1
+    total = var.sum()
+    if total <= 0:
+        return 0
+    explained = torch.cumsum(var, dim=0) / total
+    return min(torch.searchsorted(explained, threshold).item() + 1, len(S))
 
 
 def compute_gram_cosine(features: torch.Tensor) -> torch.Tensor:
@@ -303,11 +329,12 @@ def _find_linear_layers(model: nn.Module) -> list[tuple[str, nn.Linear]]:
     return [(n, m) for n, m in model.named_modules() if isinstance(m, nn.Linear)]
 
 
-def _find_penultimate_linear(model: nn.Module) -> tuple[str, nn.Linear]:
+def _find_head_linear(model: nn.Module) -> tuple[str, nn.Linear]:
+    """The policy head: the last Linear layer, whose input is the representation."""
     linears = _find_linear_layers(model)
     if len(linears) < 2:
         raise ValueError(f"Need >= 2 Linear layers, found {len(linears)}.")
-    return linears[-2]
+    return linears[-1]
 
 
 # ===================================================================
@@ -328,11 +355,13 @@ class Investigator:
 
         self._fixed_eval_obs: torch.Tensor | None = None
         self._sort_indices: torch.Tensor | None = None
+        self._layout: dict = {"arch": "MLP", "actions": [], "obs_groups": [], "sort_label": None}
         self._phase_fn: callable | None = None
         self._phase_contact_count: int | None = None
         self._log_dir: Path | None = None
         self._history: dict[str, list] = {}
         self._installed = False
+        self._final_iteration: int | None = None
 
     # ---------------------------------------------------------
     # Installation
@@ -340,13 +369,15 @@ class Investigator:
 
     def install(self, sort_fn: callable | None = None,
                 phase_fn: callable | None = None,
-                phase_contact_count: int | None = None):
+                phase_contact_count: int | None = None,
+                sort_label: str | None = None):
         """Monkey-patch runner.learn() to inject analysis hooks.
 
         Args:
             sort_fn: Optional callable(obs_batch) -> 1D sort keys.
                      Sorts Gram matrix rows for visible block structure.
                      Example: lambda obs: obs[:, 9:12].norm(dim=-1)
+            sort_label: Axis-label text for the sort key, e.g. r"$|c_v|$".
             phase_fn: Optional callable(env) -> Tensor[int] of shape [num_envs].
                       Returns the number of feet in contact per environment.
             phase_contact_count: Number of tracked feet (2 or 4), required with phase_fn.
@@ -364,27 +395,48 @@ class Investigator:
         # Output directory
         log_dir = getattr(runner, "log_dir", None) or "logs/investigator_default"
         self._log_dir = Path(log_dir) / "investigator"
-        for sub in ["features", "grams", "jacobians", "spectra", "plots", "ppo"]:
+        for sub in ["features", "grams", "jacobians", "spectra", "plots/checkpoints"]:
             (self._log_dir / sub).mkdir(parents=True, exist_ok=True)
 
-        # Collect fixed eval observations
-        self._collect_fixed_eval_obs()
+        # Resuming into the same directory: keep the earlier history (up to the
+        # resumed iteration, which learn() repeats) and the same fixed eval panel.
+        resume_iter = runner.current_learning_iteration
+        history_path = self._log_dir / "history.json"
+        if history_path.exists():
+            saved = json.loads(history_path.read_text())
+            self._history = {
+                k: [(it, v) for it, v in vals if it < resume_iter] for k, vals in saved.items()
+            }
+        obs_path = self._log_dir / "fixed_eval_obs.pt"
+        if obs_path.exists():
+            self._fixed_eval_obs = torch.load(obs_path)
+            print(f"[Investigator] Reusing fixed eval obs: {self._fixed_eval_obs.shape}")
+        else:
+            self._collect_fixed_eval_obs()
 
         # Sort indices
         if sort_fn is not None:
             with torch.no_grad():
                 keys = sort_fn(self._fixed_eval_obs.to(self.device))
                 self._sort_indices = torch.argsort(keys).cpu()
+            torch.save(self._sort_indices, self._log_dir / "sort_indices.pt")
+
+        # Plot labels (also read by the post-hoc CLI report, which has no env)
+        policy = runner.alg.policy
+        _, head = _find_head_linear(self._get_actor())
+        self._layout = {
+            "arch": "SimBa" if "simba" in type(policy).__name__.lower() else "MLP",
+            **policy_layout(runner.env, policy, self._fixed_eval_obs.shape[1], head.out_features),
+            "sort_label": sort_label if sort_fn is not None else None,
+        }
+        (self._log_dir / "layout.json").write_text(json.dumps(self._layout, indent=2))
 
         # Save config locally
         with open(self._log_dir / "investigator_cfg.json", "w") as f:
             json.dump(asdict(self.cfg), f, indent=2, default=str)
 
-        # [WANDB INTEGRATION] push investigator config to run config
-        if self.cfg.wandb_log and _WANDB_AVAILABLE and wandb.run is not None:
-            wandb.config.update(
-                {"investigator": asdict(self.cfg)}, allow_val_change=True
-            )
+        # W&B config upload waits until RSL-RL creates the run inside learn().
+        self._wandb_config_pushed = False
 
         # -- Monkey-patch learn() --
         original_learn = runner.learn
@@ -393,6 +445,10 @@ class Investigator:
         @wraps(original_learn)
         def patched_learn(num_learning_iterations: int,
                           init_at_random_ep_len: bool = False):
+            # Last iteration of this learn() call: always measured, whatever the cadence.
+            investigator._final_iteration = (
+                runner.current_learning_iteration + num_learning_iterations - 1
+            )
             original_log = runner.log
 
             @wraps(original_log)
@@ -441,13 +497,15 @@ class Investigator:
 
     def _on_iteration(self, iteration: int, locs: dict | None = None):
         cfg = self.cfg
+        self._push_wandb_config()
         if locs is not None:
             self._log_locs_scalars(iteration, locs)
-        if iteration % cfg.log_interval == 0:
+        is_final = iteration == self._final_iteration
+        if iteration % cfg.log_interval == 0 or is_final:
             self._compute_live_metrics(iteration)
-        if iteration % cfg.weight_rank_interval == 0:
+        if iteration % cfg.weight_rank_interval == 0 or is_final:
             self._compute_weight_ranks(iteration)
-        if iteration % cfg.checkpoint_interval == 0:
+        if iteration % cfg.checkpoint_interval == 0 or is_final:
             self._compute_checkpoint_metrics(iteration)
             self._dump_history()
 
@@ -487,6 +545,20 @@ class Investigator:
         if metrics:
             self._log_metrics(metrics, iteration)
 
+    def _push_wandb_config(self):
+        """Record investigator settings and the run path once the W&B run exists."""
+        if self._wandb_config_pushed or not (self.cfg.wandb_log and _WANDB_AVAILABLE and wandb.run):
+            return
+        wandb.config.update({"investigator": asdict(self.cfg)}, allow_val_change=True)
+        # comparison.py binds local runs to these immutable "entity/project/id" paths.
+        # Resuming into the same directory starts a new W&B run, so keep every segment.
+        run_file = self._log_dir / "wandb_run.json"
+        paths = json.loads(run_file.read_text())["paths"] if run_file.exists() else []
+        if wandb.run.path not in paths:
+            paths.append(wandb.run.path)
+        run_file.write_text(json.dumps({"paths": paths}))
+        self._wandb_config_pushed = True
+
     def _on_training_end(self):
         # Save history locally (json + long-format csv for pandas)
         history_path = self._dump_history()
@@ -495,18 +567,18 @@ class Investigator:
         if self.cfg.wandb_summary_on_end and _WANDB_AVAILABLE and wandb.run:
             self._write_wandb_summary()
 
-        # [WANDB INTEGRATION] upload entire investigator/ dir as run artifact
-        if self.cfg.wandb_artifact_on_end and _WANDB_AVAILABLE and wandb.run:
-            try:
-                art = wandb.Artifact(
-                    f"investigator-{wandb.run.id}", type="analysis"
-                )
-                art.add_dir(str(self._log_dir))
-                wandb.log_artifact(art)
-            except Exception as e:
-                warnings.warn(f"[Investigator] Artifact upload failed: {e}")
-
         print(f"[Investigator] Done. History -> {history_path}")
+
+    def upload_artifact(self):
+        """Upload the investigator directory; call after generate_report()."""
+        if not (self.cfg.wandb_artifact_on_end and _WANDB_AVAILABLE and wandb.run):
+            return
+        try:
+            art = wandb.Artifact(f"investigator-{wandb.run.id}", type="analysis")
+            art.add_dir(str(self._log_dir))
+            wandb.log_artifact(art)
+        except Exception as e:
+            warnings.warn(f"[Investigator] Artifact upload failed: {e}")
 
     def _dump_history(self) -> Path:
         """Write scalar history to disk without waiting for training to end."""
@@ -547,7 +619,7 @@ class Investigator:
             "investigator/policy/jacobian_erank_sample_mean",
             "investigator/policy/jacobian_erank_sample_std",
             "investigator/actor/dead_neuron_frac",
-            "investigator/actor/preact_norm",
+            "investigator/actor/feature_norm",
             "investigator/policy/action_mean_variance",
         ]:
             vals = self._history.get(key, [])
@@ -575,7 +647,7 @@ class Investigator:
 
         with torch.no_grad():
             # -- Actor features --
-            actor_feats = self._extract_penultimate_features(actor, obs)
+            actor_feats = self._extract_head_input(actor, obs)
             if actor_feats is not None:
                 _, S_a, _ = torch.linalg.svd(actor_feats, full_matrices=False)
                 metrics["investigator/actor/feature_erank"] = \
@@ -602,11 +674,10 @@ class Investigator:
                     metrics["investigator/actor/neuron_std_dist"] = \
                         wandb.Histogram(neuron_stds.cpu().numpy())
 
-            # -- Pre-activation norm --
-            preact = self._compute_preactivation_norm(actor, obs)
-            if preact is not None:
-                metrics["investigator/actor/preact_norm"] = preact[0]
-                metrics["investigator/actor/preact_norm_std"] = preact[1]
+                # -- Representation norm (policy-head input) --
+                norms = actor_feats.norm(dim=-1)
+                metrics["investigator/actor/feature_norm"] = norms.mean().item()
+                metrics["investigator/actor/feature_norm_std"] = norms.std().item()
 
             # -- Policy variance --
             action_means = self._get_action_means(actor, obs)
@@ -659,7 +730,7 @@ class Investigator:
 
         # -- Gram matrix + feature erank on fixed eval obs --
         with torch.no_grad():
-            features = self._extract_penultimate_features(actor, eval_obs)
+            features = self._extract_head_input(actor, eval_obs)
             if features is not None:
                 # Feature erank on fixed eval obs
                 _, S_fixed, V_fixed = torch.linalg.svd(
@@ -686,21 +757,16 @@ class Investigator:
                     metrics["investigator/spectra/gram_sv"] = \
                         wandb.Histogram(S_n)
 
-                # [WANDB INTEGRATION] Gram heatmap image
-                if self.cfg.wandb_gram_image and _WANDB_AVAILABLE and wandb.run:
-                    fig = self._render_gram_figure(
-                        gram.cpu(), iteration, gram_er)
-                    if fig is not None:
-                        metrics["investigator/gram/heatmap"] = wandb.Image(fig)
-                        plt.close(fig)
+                if self.cfg.gram_heatmap:
+                    self._emit_figure(
+                        self._render_gram_figure(gram.cpu(), iteration, gram_er),
+                        "gram", iteration, metrics, "investigator/gram/heatmap")
 
-                # [WANDB INTEGRATION] feature activation heatmap image
-                if self.cfg.wandb_feature_heatmap and _WANDB_AVAILABLE and wandb.run:
-                    fig = self._render_feature_heatmap(
-                        features.cpu(), V_fixed, iteration, feat_er_fixed)
-                    if fig is not None:
-                        metrics["investigator/features/heatmap"] = wandb.Image(fig)
-                        plt.close(fig)
+                if self.cfg.feature_heatmap:
+                    self._emit_figure(
+                        self._render_feature_heatmap(
+                            features.cpu(), V_fixed, iteration, feat_er_fixed),
+                        "features", iteration, metrics, "investigator/features/heatmap")
 
         # -- Jacobian rank --
         jac_obs = eval_obs[:self.cfg.jacobian_batch_size]
@@ -739,23 +805,14 @@ class Investigator:
                 metrics["investigator/spectra/jacobian_sv"] = \
                     wandb.Histogram(jac_S.cpu().numpy())
 
-            # [WANDB INTEGRATION] Jacobian mean heatmap image
-            if (self.cfg.wandb_jacobian_heatmap and _WANDB_AVAILABLE
-                    and wandb.run and jac_matrix is not None):
-                fig = self._render_jacobian_heatmap(
-                    jac_matrix.cpu(), iteration, jac_er)
-                if fig is not None:
-                    metrics["investigator/jacobian/heatmap"] = wandb.Image(fig)
-                    plt.close(fig)
-
-            # [WANDB INTEGRATION] Jacobian std heatmap image
-            if (self.cfg.wandb_jacobian_heatmap and _WANDB_AVAILABLE
-                    and wandb.run and jac_std is not None):
-                fig = self._render_jacobian_std_heatmap(
-                    jac_std.cpu(), iteration)
-                if fig is not None:
-                    metrics["investigator/jacobian/std_heatmap"] = wandb.Image(fig)
-                    plt.close(fig)
+            if self.cfg.jacobian_heatmap and jac_matrix is not None:
+                self._emit_figure(
+                    self._render_jacobian_heatmap(jac_matrix.cpu(), iteration, jac_er),
+                    "jacobian", iteration, metrics, "investigator/jacobian/heatmap")
+            if self.cfg.jacobian_heatmap and jac_std is not None:
+                self._emit_figure(
+                    self._render_jacobian_std_heatmap(jac_std.cpu(), iteration),
+                    "jacobian_std", iteration, metrics, "investigator/jacobian/std_heatmap")
 
         # Phase labels and observations must come from the same live environment state.
         if self.cfg.phase_log_enabled and self._phase_fn is not None:
@@ -764,12 +821,10 @@ class Investigator:
             except Exception as e:
                 warnings.warn(f"[Investigator] Phase metrics failed: {e}")
 
-        # [WANDB INTEGRATION] per-layer weight heatmap image
-        if self.cfg.wandb_weight_heatmap and _WANDB_AVAILABLE and wandb.run:
-            fig = self._render_weight_heatmap(actor, iteration)
-            if fig is not None:
-                metrics["investigator/weights/heatmap"] = wandb.Image(fig)
-                plt.close(fig)
+        if self.cfg.weight_heatmap:
+            self._emit_figure(
+                self._render_weight_heatmap(actor, iteration),
+                "weights", iteration, metrics, "investigator/weights/heatmap")
 
         # -- Full weight spectra (disk only) --
         if self.cfg.save_spectra:
@@ -819,7 +874,7 @@ class Investigator:
 
             if valid:
                 with torch.no_grad():
-                    features = self._extract_penultimate_features(actor, phase_obs)
+                    features = self._extract_head_input(actor, phase_obs)
                     if features is not None:
                         singular_values = torch.linalg.svdvals(features)
                         feature_erank = effective_rank(singular_values, self.cfg.erank_eps)
@@ -829,7 +884,7 @@ class Investigator:
                         row["feature_erank"] = feature_erank
                         row["pca_rank_99"] = pca
 
-                    gram_features = self._extract_penultimate_features(actor, phase_obs[:512])
+                    gram_features = self._extract_head_input(actor, phase_obs[:512])
                     if gram_features is not None:
                         gram = compute_gram_cosine(gram_features)
                         gram_erank = effective_rank(torch.linalg.svdvals(gram), self.cfg.erank_eps)
@@ -865,50 +920,29 @@ class Investigator:
     # Feature extraction via hooks
     # ---------------------------------------------------------
 
-    def _extract_penultimate_features(
+    def _extract_head_input(
         self, model: nn.Module, obs: torch.Tensor
     ) -> torch.Tensor | None:
+        """Representation fed to the policy head (input of the last Linear).
+
+        MLP: last hidden activation. SimBa: post_ln(residual stream).
+        """
         captured = {}
         try:
-            _, penult = _find_penultimate_linear(model)
+            _, head = _find_head_linear(model)
         except ValueError:
             return None
 
-        def hook(module, inp, out):
-            captured["f"] = out.detach()
+        def hook(module, inp):
+            captured["f"] = inp[0].detach()
 
-        h = penult.register_forward_hook(hook)
+        h = head.register_forward_pre_hook(hook)
         try:
             with torch.no_grad():
                 model(obs)
         finally:
             h.remove()
         return captured.get("f")
-
-    def _compute_preactivation_norm(
-        self, model: nn.Module, obs: torch.Tensor
-    ) -> tuple[float, float] | None:
-        captured = {}
-        try:
-            _, penult = _find_penultimate_linear(model)
-        except ValueError:
-            return None
-
-        def hook(module, inp, out):
-            captured["p"] = out.detach()
-
-        h = penult.register_forward_hook(hook)
-        try:
-            with torch.no_grad():
-                model(obs)
-        finally:
-            h.remove()
-
-        p = captured.get("p")
-        if p is None:
-            return None
-        norms = p.norm(dim=-1)
-        return norms.mean().item(), norms.std().item()
 
     def _get_action_means(
         self, actor: nn.Module, obs: torch.Tensor
@@ -942,10 +976,13 @@ class Investigator:
         def fwd(x):
             return actor(x.unsqueeze(0)).squeeze(0)
 
+        was_training = actor.training
         actor.eval()
-        with torch.enable_grad():
-            J = vmap(jacrev(fwd))(obs)  # [B, a_dim, o_dim]
-        actor.train()
+        try:
+            with torch.enable_grad():
+                J = vmap(jacrev(fwd))(obs)  # [B, a_dim, o_dim]
+        finally:
+            actor.train(was_training)
 
         J_mean = J.mean(dim=0)
         J_std = J.std(dim=0)
@@ -959,19 +996,22 @@ class Investigator:
 
     def _jacobian_loop(self, actor, obs):
         obs_g = obs.detach().requires_grad_(True)
+        was_training = actor.training
         actor.eval()
-        out = actor(obs_g)
-        a_dim = out.shape[-1]
+        try:
+            out = actor(obs_g)
+            a_dim = out.shape[-1]
 
-        J = torch.zeros(obs.shape[0], a_dim, obs.shape[-1], device=obs.device)
-        for a in range(a_dim):
-            g = torch.zeros_like(out)
-            g[:, a] = 1.0
-            grads = torch.autograd.grad(
-                out, obs_g, g, retain_graph=(a < a_dim - 1))[0]
-            J[:, a, :] = grads
+            J = torch.zeros(obs.shape[0], a_dim, obs.shape[-1], device=obs.device)
+            for a in range(a_dim):
+                g = torch.zeros_like(out)
+                g[:, a] = 1.0
+                grads = torch.autograd.grad(
+                    out, obs_g, g, retain_graph=(a < a_dim - 1))[0]
+                J[:, a, :] = grads
+        finally:
+            actor.train(was_training)
 
-        actor.train()
         J_mean = J.mean(dim=0)
         J_std = J.std(dim=0)
         _, S, _ = torch.linalg.svd(J_mean, full_matrices=False)
@@ -1013,14 +1053,29 @@ class Investigator:
         with torch.no_grad():
             return normalizer(obs)
 
-    def _get_critic(self) -> nn.Module:
-        return self.runner.alg.policy.critic
+    def _emit_figure(self, fig, name: str, iteration: int, metrics: dict, wandb_key: str):
+        """Save a checkpoint figure (PNG + PDF) and attach it to the W&B row if a run exists."""
+        if fig is None:
+            return
+        save_figure(fig, self._log_dir / "plots" / "checkpoints" / f"{name}_{iteration}")
+        if self.cfg.wandb_log and _WANDB_AVAILABLE and wandb.run:
+            metrics[wandb_key] = wandb.Image(figure_image(fig))
+        plt.close(fig)
 
-    def _plot_labels(self, action_dim: int, obs_dim: int):
-        """Only label the known Spot layout with Spot joint and observation names."""
-        if self.cfg.spot_labels and action_dim == len(ACTION_LABELS) and obs_dim == OBS_GROUPS[-1][2]:
-            return ACTION_LABELS, OBS_GROUPS
-        return [f"a{i}" for i in range(action_dim)], []
+    def _action_labels(self, a_dim: int) -> list[str]:
+        actions = self._layout.get("actions") or []
+        return actions if len(actions) == a_dim else [f"$a_{{{i}}}$" for i in range(a_dim)]
+
+    def _obs_groups(self, o_dim: int) -> list:
+        groups = self._layout.get("obs_groups") or []
+        return groups if groups and groups[-1][2] == o_dim else []
+
+    def _sample_label(self) -> str:
+        sort_label = self._layout.get("sort_label")
+        return f"Sample (sorted by {sort_label})" if sort_label else "Sample"
+
+    def _arch_color(self) -> str:
+        return PALETTE["simba" if self._layout.get("arch") == "SimBa" else "mlp"]
 
     # ---------------------------------------------------------
     # Logging
@@ -1051,261 +1106,131 @@ class Investigator:
                 step=iteration,
             )
 
-    # ---------------------------------------------------------
-    # PPO trust-region (optional — call from patched PPO.update)
-    # ---------------------------------------------------------
-
-    def log_ppo_ratios(self, ratios: torch.Tensor, clip_param: float,
-                       iteration: int):
-        with torch.no_grad():
-            above = ratios[ratios > 1 + clip_param]
-            below = ratios[ratios < 1 - clip_param]
-            frac = (
-                (ratios > 1 + clip_param).float().mean()
-                + (ratios < 1 - clip_param).float().mean()
-            ).item()
-            metrics = {
-                "investigator/ppo/frac_clipped": frac,
-                "investigator/ppo/avg_ratio_above":
-                    above.mean().item() if len(above) else 1 + clip_param,
-                "investigator/ppo/avg_ratio_below":
-                    below.mean().item() if len(below) else 1 - clip_param,
-                "investigator/ppo/ratio_mean": ratios.mean().item(),
-                "investigator/ppo/ratio_std": ratios.std().item(),
-            }
-            # [WANDB INTEGRATION] PPO ratio distribution histogram
-            if self.cfg.wandb_spectral_histograms and _WANDB_AVAILABLE:
-                metrics["investigator/ppo/ratio_distribution"] = \
-                    wandb.Histogram(ratios.cpu().numpy())
-                # Backup raw ratios for post-hoc histogram reconstruction
-                torch.save(ratios.detach().cpu(),
-                           self._log_dir / f"ppo/ratios_{iteration}.pt")
-
-        self._log_metrics(metrics, iteration)
-
     # ===================================================================
-    # Gram matrix rendering
+    # Checkpoint heatmaps
     # ===================================================================
 
     def _render_gram_figure(self, gram: torch.Tensor, iteration: int,
                             erank_val: float):
-
-        gram_np = gram.numpy()
+        """Cosine Gram of head-input features; negatives clipped to 0 (pattern view)."""
+        g = gram.numpy()
         if self._sort_indices is not None:
             idx = self._sort_indices.numpy()
-            gram_np = gram_np[np.ix_(idx, idx)]
+            g = g[np.ix_(idx, idx)]
 
-        fig, ax = plt.subplots(
-            1, 1,
-            figsize=self.cfg.figsize_gram,
-        )
-
-        # Full Gram panel (kept for future reuse)
-        # norm, cmap = _gram_colornorm(gram_np)
-        # im0 = axes[0].imshow(gram_np, cmap=cmap, norm=norm,
-        #                      aspect="equal", interpolation="nearest")
-        # axes[0].set_title(
-        #     f"Gram (full) -- iter {iteration}  |  erank = {erank_val:.1f}",
-        #     fontsize=8)
-        # axes[0].set_xlabel("obs index")
-        # axes[0].set_ylabel("obs index")
-        # div0 = make_axes_locatable(axes[0])
-        # fig.colorbar(im0, cax=div0.append_axes("right", size="4%", pad=0.05))
-
-        # Top-right: pattern view (white->yellow, Hu et al. style)
-        gp, norm_p, cmap_p, vmin_p, vmax_p = _gram_pattern(gram_np)
-        im1 = ax.imshow(gp, cmap=cmap_p, norm=norm_p,
-                        vmin=vmin_p, vmax=vmax_p,
-                        aspect="equal", interpolation="nearest")
-        ax.set_title(
-            f"Gram (pattern) -- iter {iteration}", fontsize=8)
-        ax.set_xlabel("obs index")
-        ax.set_ylabel("obs index")
-        div1 = make_axes_locatable(ax)
-        fig.colorbar(im1, cax=div1.append_axes("right", size="4%", pad=0.05))
-        fig.tight_layout()
+        fig, ax = plt.subplots(figsize=(COLUMN_WIDTH, COLUMN_WIDTH * 0.85), layout="constrained")
+        im = ax.imshow(np.clip(g, 0.0, 1.0), cmap=CMAP_SEQUENTIAL, vmin=0.0, vmax=1.0,
+                       interpolation="antialiased")
+        ax.set_xticks([])
+        ax.set_yticks([])
+        ax.set_xlabel(self._sample_label())
+        ax.set_ylabel(self._sample_label())
+        ax.set_title(f"Gram matrix, iteration {iteration} (erank {erank_val:.1f})")
+        _colorbar(fig, im, ax, "Cosine similarity")
         return fig
-
-    # ===================================================================
-    # Feature activation heatmap (N x D)
-    # ===================================================================
 
     def _render_feature_heatmap(self, features: torch.Tensor,
                                 V: torch.Tensor, iteration: int,
                                 erank_val: float):
-        """Render N x D feature activation heatmap.
-
-        Rows sorted by sort_fn (same as Gram), columns sorted by
-        participation in the top right-singular-vector.
-        """
-
-        feat_np = features.numpy()
-        N, D = feat_np.shape
-
-        # Sort rows (observations) by sort_fn indices
+        """Samples x head-input units; rows in sort order, units by top right singular vector."""
+        f = features.numpy()
         if self._sort_indices is not None:
-            feat_np = feat_np[self._sort_indices.numpy()]
+            f = f[self._sort_indices.numpy()]
+        f = f[:, np.argsort(-np.abs(V[0].numpy()))]
 
-        # Sort columns by top right-singular-vector magnitude
-        col_order = np.argsort(-np.abs(V[0].numpy()))
-        feat_np = feat_np[:, col_order]
-
-        w, h = 10.0, 8.0
-        fig, ax = plt.subplots(figsize=(w, h))
-        vabs = max(abs(feat_np.min()), abs(feat_np.max()))
-        if vabs > 0:
-            norm = TwoSlopeNorm(vmin=-vabs, vcenter=0, vmax=vabs)
-        else:
-            norm = None
-        im = ax.imshow(feat_np, cmap=_CMAP_BWY, norm=norm,
-                   aspect="auto", interpolation="nearest")
-        ax.set_title(f"Feature Activations -- iter {iteration}  |  "
-                     f"erank = {erank_val:.1f}", fontsize=9)
-        ax.set_xlabel("neuron (sorted by top SV)")
-        ax.set_ylabel("obs index")
-        div = make_axes_locatable(ax)
-        fig.colorbar(im, cax=div.append_axes("right", size="3%", pad=0.05))
-        fig.tight_layout()
+        fig, ax = plt.subplots(figsize=(COLUMN_WIDTH, COLUMN_WIDTH * 0.85), layout="constrained")
+        im = ax.imshow(f, cmap=CMAP_DIVERGING, norm=_symmetric_norm(f), aspect="auto",
+                       interpolation="antialiased")
+        ax.set_xticks([])
+        ax.set_yticks([])
+        ax.set_xlabel(r"Head-input unit (sorted by $|v_1|$)")
+        ax.set_ylabel(self._sample_label())
+        ax.set_title(f"Features, iteration {iteration} (erank {erank_val:.1f})")
+        _colorbar(fig, im, ax, "Activation")
         return fig
 
-    # ===================================================================
-    # Jacobian heatmap (action_dim x obs_dim)
-    # ===================================================================
+    def _jacobian_figure(self, J: np.ndarray, rows: int = 1):
+        a_dim = J.shape[0]
+        row_h = 0.105 * a_dim + 0.35
+        return plt.subplots(rows, 1, figsize=(FULL_WIDTH, rows * row_h + 0.45),
+                            squeeze=False, layout="constrained")
+
+    def _label_jacobian(self, ax, a_dim: int, o_dim: int, sep_color: str,
+                        show_x: bool = True):
+        """Actions on y (joint labels), observation terms on x (horizontal symbols)."""
+        actions = self._action_labels(a_dim)
+        ax.set_yticks(range(a_dim))
+        ax.set_yticklabels(actions)
+        ax.set_ylabel("Action")
+        groups = self._obs_groups(o_dim)
+        if groups:
+            ax.set_xticks([(s + e - 1) / 2 for _, s, e in groups])
+            ax.set_xticklabels([n for n, _, _ in groups] if show_x else [])
+            for _, s, _ in groups[1:]:
+                ax.axvline(s - 0.5, color=sep_color, linewidth=0.5)
+        elif not show_x:
+            ax.set_xticklabels([])
+        if show_x:
+            ax.set_xlabel("Observation")
+        # Separate limbs when actions come in runs sharing a prefix (FL, LF, ...).
+        prefixes = [a.split(" ")[0] for a in actions]
+        bounds = [i for i in range(1, a_dim) if prefixes[i] != prefixes[i - 1]]
+        runs = np.diff([0, *bounds, a_dim])
+        if bounds and runs.min() >= 2:
+            for i in bounds:
+                ax.axhline(i - 0.5, color=sep_color, linewidth=0.5)
+        ax.tick_params(length=2.0, width=0.6)
 
     def _render_jacobian_heatmap(self, J_mean: torch.Tensor, iteration: int,
                                  erank_val: float):
-        """Render action_dim x obs_dim Jacobian as a semantically labeled heatmap."""
-
-        J_np = J_mean.numpy()
-        a_dim, o_dim = J_np.shape
-
-        # Row labels (actions)
-        row_labels, obs_groups = self._plot_labels(a_dim, o_dim)
-
-        # Figure: natural aspect ratio (short & wide for 12 x 49)
-        w = max(6.5, o_dim / 6)
-        h = max(2.5, a_dim / 3)
-        fig, ax = plt.subplots(figsize=(w, h))
-
-        vabs = max(abs(J_np.min()), abs(J_np.max()))
-        if vabs > 0:
-            norm = TwoSlopeNorm(vmin=-vabs, vcenter=0, vmax=vabs)
-        else:
-            norm = None
-        im = ax.imshow(J_np, cmap=_CMAP_BWY, norm=norm, aspect="auto",
+        J = J_mean.numpy()
+        fig, axes = self._jacobian_figure(J)
+        ax = axes[0, 0]
+        im = ax.imshow(J, cmap=CMAP_DIVERGING, norm=_symmetric_norm(J), aspect="auto",
                        interpolation="nearest")
-
-        ax.set_yticks(range(a_dim))
-        ax.set_yticklabels(row_labels, fontsize=7)
-
-        # Obs group separators and labels
-        group_ticks = []
-        for gname, g_start, g_end in obs_groups:
-            if g_start < o_dim:
-                mid = (g_start + min(g_end, o_dim)) / 2
-                group_ticks.append((mid, gname))
-                if g_start > 0:
-                    ax.axvline(g_start - 0.5, color="k",
-                               linewidth=0.5, alpha=0.4)
-        if group_ticks:
-            ax.set_xticks([t for t, _ in group_ticks])
-            ax.set_xticklabels([l for _, l in group_ticks],
-                               fontsize=6, rotation=30, ha="right")
-
-        # Leg group separators (every 3 actions)
-        if obs_groups:
-            for i in range(3, a_dim, 3):
-                ax.axhline(i - 0.5, color="k", linewidth=0.5, alpha=0.4)
-
-        ax.set_title(f"Jacobian -- iter {iteration}  |  "
-                     f"erank = {erank_val:.1f}", fontsize=9)
-        div = make_axes_locatable(ax)
-        fig.colorbar(im, cax=div.append_axes("right", size="3%", pad=0.05))
-        fig.tight_layout()
+        self._label_jacobian(ax, *J.shape, sep_color=PALETTE["ghost"])
+        ax.set_title(f"Mean policy Jacobian, iteration {iteration} (erank {erank_val:.1f})")
+        _colorbar(fig, im, ax, r"$\partial a_i / \partial o_j$")
         return fig
-
-    # ===================================================================
-    # Jacobian std heatmap (action_dim x obs_dim)
-    # ===================================================================
 
     def _render_jacobian_std_heatmap(self, J_std: torch.Tensor, iteration: int):
-        """Render element-wise std of J across samples as a heatmap."""
-
-        J_np = J_std.numpy()
-        a_dim, o_dim = J_np.shape
-
-        row_labels, obs_groups = self._plot_labels(a_dim, o_dim)
-
-        w = max(6.5, o_dim / 6)
-        h = max(2.5, a_dim / 3)
-        fig, ax = plt.subplots(figsize=(w, h))
-
-        vmax = J_np.max() if J_np.max() > 0 else 1.0
-        im = ax.imshow(J_np, cmap="magma", vmin=0.0, vmax=vmax,
+        J = J_std.numpy()
+        fig, axes = self._jacobian_figure(J)
+        ax = axes[0, 0]
+        im = ax.imshow(J, cmap=CMAP_SEQUENTIAL, vmin=0.0, vmax=max(float(J.max()), 1e-12),
                        aspect="auto", interpolation="nearest")
-
-        ax.set_yticks(range(a_dim))
-        ax.set_yticklabels(row_labels, fontsize=7)
-
-        group_ticks = []
-        for gname, g_start, g_end in obs_groups:
-            if g_start < o_dim:
-                mid = (g_start + min(g_end, o_dim)) / 2
-                group_ticks.append((mid, gname))
-                if g_start > 0:
-                    ax.axvline(g_start - 0.5, color="w",
-                               linewidth=0.5, alpha=0.4)
-        if group_ticks:
-            ax.set_xticks([t for t, _ in group_ticks])
-            ax.set_xticklabels([l for _, l in group_ticks],
-                               fontsize=6, rotation=30, ha="right")
-
-        if obs_groups:
-            for i in range(3, a_dim, 3):
-                ax.axhline(i - 0.5, color="w", linewidth=0.5, alpha=0.4)
-
-        ax.set_title(f"Jacobian Std -- iter {iteration}", fontsize=9)
-        div = make_axes_locatable(ax)
-        fig.colorbar(im, cax=div.append_axes("right", size="3%", pad=0.05))
-        fig.tight_layout()
+        self._label_jacobian(ax, *J.shape, sep_color=PALETTE["ghost"])
+        ax.set_title(f"Policy Jacobian std. across samples, iteration {iteration}")
+        _colorbar(fig, im, ax, r"std. $\partial a_i / \partial o_j$")
         return fig
 
-    # ===================================================================
-    # Weight heatmap (per-layer)
-    # ===================================================================
-
     def _render_weight_heatmap(self, model: nn.Module, iteration: int):
-        """Render weight matrices of all Linear layers as heatmap subplots."""
-
+        """Weight matrices of all Linear layers, one panel per layer."""
         layers = _find_linear_layers(model)
         if not layers:
             return None
-
         n = len(layers)
-        fig, axes = plt.subplots(1, n, figsize=(n * 3.5, 3.0), squeeze=False)
-
+        ncols = min(n, 4)
+        nrows = -(-n // ncols)
+        fig, axes = plt.subplots(nrows, ncols, figsize=(FULL_WIDTH, nrows * 1.75),
+                                 squeeze=False, layout="constrained")
         with torch.no_grad():
-            for i, (name, layer) in enumerate(layers):
+            for i, (_, layer) in enumerate(layers):
                 W = layer.weight.data.cpu().numpy()
-                _, S, _ = torch.linalg.svd(
-                    layer.weight.data, full_matrices=False)
-                er = effective_rank(S, self.cfg.erank_eps)
-
-                ax = axes[0, i]
-                vabs = max(abs(W.min()), abs(W.max()))
-                if vabs > 0:
-                    norm = TwoSlopeNorm(vmin=-vabs, vcenter=0, vmax=vabs)
-                else:
-                    norm = None
-                im = ax.imshow(W, cmap=_CMAP_BWY, norm=norm, aspect="auto",
-                               interpolation="nearest")
-                ax.set_title(f"L{i} ({W.shape[0]}x{W.shape[1]})\n"
-                             f"er={er:.1f}", fontsize=7)
-                ax.tick_params(labelsize=5)
-                fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
-
-        fig.suptitle(f"Weight Matrices -- iter {iteration}", fontsize=9)
-        fig.tight_layout()
+                er = effective_rank(torch.linalg.svdvals(layer.weight.data), self.cfg.erank_eps)
+                ax = axes[i // ncols, i % ncols]
+                im = ax.imshow(W, cmap=CMAP_DIVERGING, norm=_symmetric_norm(W), aspect="auto",
+                               interpolation="antialiased")
+                ax.set_xticks([])
+                ax.set_yticks([])
+                ax.set_title(rf"$W_{{{i}}}$, {W.shape[0]}$\times${W.shape[1]}"
+                             f"\nerank {er:.1f}")
+                _colorbar(fig, im, ax, None)
+        for j in range(n, nrows * ncols):
+            axes[j // ncols, j % ncols].set_axis_off()
+        axes[0, 0].set_ylabel("Output")
+        axes[-1, 0].set_xlabel("Input")
+        fig.suptitle(f"Actor weights, iteration {iteration}", fontsize=9.0)
         return fig
 
     # ===================================================================
@@ -1313,22 +1238,23 @@ class Investigator:
     # ===================================================================
 
     def generate_report(self, compare_dirs: list[str | Path] | None = None):
-        """Generate matplotlib plots from saved data."""
+        """Generate the paper-style report figures (PNG + PDF) from saved data."""
 
         plots_dir = self._log_dir / "plots"
-        history = self._load_history(self._log_dir)
-        all_h = [("this_run", history)]
-        if compare_dirs:
-            for d in compare_dirs:
-                all_h.append((Path(d).parent.name,
-                              self._load_history(Path(d))))
+        runs = [(self._log_dir.parent.name, self._layout.get("arch", "MLP"),
+                 self._load_history(self._log_dir))]
+        for d in compare_dirs or []:
+            d = Path(d)
+            label = d.parent.name
+            runs.append((label, _read_layout(d).get("arch") or arch_of(label),
+                         self._load_history(d)))
 
-        self._plot_rank_evolution(all_h, plots_dir)
+        self._plot_rank_evolution(runs, plots_dir)
         self._plot_gram_evolution_grid(plots_dir)
         self._plot_feature_heatmap_grid(plots_dir)
         self._plot_jacobian_heatmap_grid(plots_dir)
         self._plot_spectral_evolution(plots_dir)
-        self._plot_collapse_indicators(all_h, plots_dir)
+        self._plot_collapse_indicators(runs, plots_dir)
         print(f"[Investigator] Report -> {plots_dir}")
 
     def _load_history(self, inv_dir: Path) -> dict:
@@ -1338,243 +1264,209 @@ class Investigator:
                 return json.load(f)
         return self._history
 
-    def _plot_rank_evolution(self, all_h, out):
+    def _plot_rank_evolution(self, runs, out):
         keys = [
-            ("investigator/actor/feature_erank", "Actor Feature erank"),
-            ("investigator/policy/jacobian_erank", "Jacobian erank"),
-            ("investigator/gram/erank", "Gram erank"),
+            ("investigator/actor/feature_erank", "Feature"),
+            ("investigator/policy/jacobian_erank", "Jacobian"),
+            ("investigator/gram/erank", "Gram"),
         ]
-        fig, axes = plt.subplots(1, len(keys),
-                                 figsize=self.cfg.figsize_evolution)
-        for ax, (k, t) in zip(axes, keys):
-            for label, h in all_h:
-                if k in h:
-                    its, vs = zip(*h[k])
-                    ax.plot(its, vs, label=label, linewidth=1.5)
-            ax.set_title(t, fontsize=9)
-            ax.set_xlabel("iteration")
-            ax.set_ylabel("effective rank")
-            ax.legend(fontsize=7)
-            ax.grid(True, alpha=0.3)
-        fig.suptitle("Rank Evolution", fontsize=11, y=1.02)
-        fig.tight_layout()
-        fig.savefig(out / f"rank_evolution.{self.cfg.plot_format}",
-                    dpi=self.cfg.plot_dpi, bbox_inches="tight")
+        fig = _plot_history_panels(runs, keys, "Effective rank")
+        save_figure(fig, out / "rank_evolution")
+        plt.close(fig)
+
+    def _plot_collapse_indicators(self, runs, out):
+        keys = [
+            ("investigator/actor/feature_norm", "Head-input L2 norm"),
+            ("investigator/actor/dead_neuron_frac", "Dead-unit fraction"),
+            ("investigator/policy/action_mean_variance", "Policy variance"),
+        ]
+        fig = _plot_history_panels(runs, keys, None)
+        save_figure(fig, out / "collapse_indicators")
         plt.close(fig)
 
     def _plot_gram_evolution_grid(self, out):
-        gdir = self._log_dir / "grams"
-        gfiles = sorted(gdir.glob("gram_*.pt"),
-                        key=lambda p: int(p.stem.split("_")[1]))
+        gfiles = _checkpoint_files(self._log_dir / "grams", "gram_*.pt", 6)
         if not gfiles:
             return
-        n = min(6, len(gfiles))
-        idxs = np.linspace(0, len(gfiles) - 1, n, dtype=int)
-        sel = [gfiles[i] for i in idxs]
-
-        fig, axes = plt.subplots(
-            3, n, figsize=(n * 3.2, 10), height_ratios=[3, 3, 1],
-            gridspec_kw={"hspace": .35, "wspace": .3})
-        if n == 1:
-            axes = axes.reshape(3, 1)
-
-        for col, gf in enumerate(sel):
+        n = len(gfiles)
+        side = FULL_WIDTH / n
+        fig, axes = plt.subplots(3, n, figsize=(FULL_WIDTH, 2 * side + 1.0),
+                                 height_ratios=[side, side, 1.0], squeeze=False,
+                                 layout="constrained")
+        color = self._arch_color()
+        for col, (it, gf) in enumerate(gfiles):
             gram = torch.load(gf, weights_only=True)
-            g_np = gram.numpy()
-            it = int(gf.stem.split("_")[1])
+            g = gram.numpy()
             if self._sort_indices is not None:
                 idx = self._sort_indices.numpy()
-                g_np = g_np[np.ix_(idx, idx)]
-
-            _, Sg, _ = torch.linalg.svd(gram)
+                g = g[np.ix_(idx, idx)]
+            Sg = torch.linalg.svdvals(gram)
             er = effective_rank(Sg, self.cfg.erank_eps)
 
-            # Row 0: 3-color diagnostic
-            ax_g = axes[0, col]
-            norm, cmap = _gram_colornorm(g_np)
-            ax_g.imshow(g_np, cmap=cmap, norm=norm,
-                        aspect="equal", interpolation="nearest")
-            ax_g.set_title(f"iter {it}\ner={er:.1f}", fontsize=8)
-            ax_g.tick_params(labelsize=6)
+            im_signed = axes[0, col].imshow(g, cmap=CMAP_DIVERGING, vmin=-1.0, vmax=1.0,
+                                            interpolation="antialiased")
+            axes[0, col].set_title(f"Iteration {it}\nerank {er:.1f}")
+            im_clip = axes[1, col].imshow(np.clip(g, 0.0, 1.0), cmap=CMAP_SEQUENTIAL,
+                                          vmin=0.0, vmax=1.0, interpolation="antialiased")
+            for r in (0, 1):
+                axes[r, col].set_xticks([])
+                axes[r, col].set_yticks([])
 
-            # Row 1: pattern view (white->yellow)
-            ax_p = axes[1, col]
-            gp, norm_p, cmap_p, vmin_p, vmax_p = _gram_pattern(g_np)
-            ax_p.imshow(gp, cmap=cmap_p, norm=norm_p,
-                        vmin=vmin_p, vmax=vmax_p,
-                        aspect="equal", interpolation="nearest")
-            ax_p.set_title("pattern", fontsize=7)
-            ax_p.tick_params(labelsize=6)
-
-            # Row 2: spectral decay
             ax_s = axes[2, col]
             Sn = (Sg / Sg.sum()).numpy()
-            ax_s.semilogy(Sn, color="#2E86AB", linewidth=1.0)
-            ax_s.axhline(1 / len(Sn), color="#A23B72",
-                         linestyle="--", linewidth=.6)
-            ax_s.tick_params(labelsize=6)
-            if col == 0:
-                ax_s.set_ylabel("normalized sigma", fontsize=7)
-
-        fig.suptitle("Gram Matrix Evolution", fontsize=11)
-        fig.tight_layout()
-        fig.savefig(out / f"gram_evolution.{self.cfg.plot_format}",
-                    dpi=self.cfg.plot_dpi, bbox_inches="tight")
+            ax_s.semilogy(Sn, color=color, linewidth=0.9, zorder=3)
+            ax_s.axhline(1 / len(Sn), color=PALETTE["ghost"], linestyle="--", linewidth=0.6,
+                         zorder=2)
+            style_axes(ax_s)
+            ax_s.set_xlabel("Index")
+            if col:
+                ax_s.tick_params(labelleft=False)
+        axes[0, 0].set_ylabel("Signed")
+        axes[1, 0].set_ylabel("Clipped at 0")
+        axes[2, 0].set_ylabel(r"Normalized $\sigma_i$")
+        _colorbar(fig, im_signed, axes[0, :].tolist(), "Cosine similarity")
+        _colorbar(fig, im_clip, axes[1, :].tolist(), "Cosine similarity")
+        save_figure(fig, out / "gram_evolution")
         plt.close(fig)
 
     def _plot_feature_heatmap_grid(self, out):
-        fdir = self._log_dir / "features"
-        ffiles = sorted(fdir.glob("features_*.pt"),
-                        key=lambda p: int(p.stem.split("_")[1]))
+        ffiles = _checkpoint_files(self._log_dir / "features", "features_*.pt", 4)
         if not ffiles:
             return
-        n = min(4, len(ffiles))
-        idxs = np.linspace(0, len(ffiles) - 1, n, dtype=int)
-        sel = [ffiles[i] for i in idxs]
-
-        fig, axes = plt.subplots(1, n, figsize=(n * 4, 4), squeeze=False)
-        for col, ff in enumerate(sel):
+        panels = []
+        for it, ff in ffiles:
             features = torch.load(ff, weights_only=True)
-            it = int(ff.stem.split("_")[1])
-            feat_np = features.numpy()
-
+            f = features.numpy()
             if self._sort_indices is not None:
-                feat_np = feat_np[self._sort_indices.numpy()]
+                f = f[self._sort_indices.numpy()]
+            _, S, V = torch.linalg.svd(features, full_matrices=False)
+            panels.append((it, f[:, np.argsort(-np.abs(V[0].numpy()))],
+                           effective_rank(S, self.cfg.erank_eps)))
+        norm = _symmetric_norm(np.concatenate([p[1].ravel() for p in panels]))
 
-            _, _, V = torch.linalg.svd(features, full_matrices=False)
-            col_order = np.argsort(-np.abs(V[0].numpy()))
-            feat_np = feat_np[:, col_order]
-
-            _, S_f, _ = torch.linalg.svd(features, full_matrices=False)
-            er = effective_rank(S_f, self.cfg.erank_eps)
-
+        n = len(panels)
+        fig, axes = plt.subplots(1, n, figsize=(FULL_WIDTH, 2.2), squeeze=False,
+                                 layout="constrained")
+        for col, (it, f, er) in enumerate(panels):
             ax = axes[0, col]
-            ax.imshow(feat_np, cmap="viridis", aspect="auto",
-                      interpolation="nearest")
-            ax.set_title(f"iter {it}\ner={er:.1f}", fontsize=8)
-            ax.tick_params(labelsize=6)
-            if col == 0:
-                ax.set_ylabel("obs index", fontsize=7)
-
-        fig.suptitle("Feature Activation Evolution", fontsize=11)
-        fig.tight_layout()
-        fig.savefig(out / f"feature_evolution.{self.cfg.plot_format}",
-                    dpi=self.cfg.plot_dpi, bbox_inches="tight")
+            im = ax.imshow(f, cmap=CMAP_DIVERGING, norm=norm, aspect="auto",
+                           interpolation="antialiased")
+            ax.set_title(f"Iteration {it}\nerank {er:.1f}")
+            ax.set_xticks([])
+            ax.set_yticks([])
+            ax.set_xlabel("Head-input unit")
+        axes[0, 0].set_ylabel(self._sample_label())
+        _colorbar(fig, im, axes[0, :].tolist(), "Activation")
+        save_figure(fig, out / "feature_evolution")
         plt.close(fig)
 
     def _plot_jacobian_heatmap_grid(self, out):
-        jdir = self._log_dir / "jacobians"
-        jfiles = sorted(jdir.glob("jac_matrix_*.pt"),
-                        key=lambda p: int(p.stem.split("_")[-1]))
+        jfiles = _checkpoint_files(self._log_dir / "jacobians", "jac_matrix_*.pt", 4)
         if not jfiles:
             return
-        n = min(4, len(jfiles))
-        idxs = np.linspace(0, len(jfiles) - 1, n, dtype=int)
-        sel = [jfiles[i] for i in idxs]
+        mats = [(it, torch.load(jf, weights_only=True)) for it, jf in jfiles]
+        norm = _symmetric_norm(np.concatenate([J.numpy().ravel() for _, J in mats]))
+        a_dim, o_dim = mats[0][1].shape
 
-        fig, axes = plt.subplots(1, n, figsize=(n * 5, 3.0), squeeze=False)
-        for col, jf in enumerate(sel):
-            J_mean = torch.load(jf, weights_only=True)
-            it = int(jf.stem.split("_")[-1])
-            J_np = J_mean.numpy()
-            a_dim, o_dim = J_np.shape
-
-            _, S_j, _ = torch.linalg.svd(J_mean, full_matrices=False)
-            er = effective_rank(S_j, self.cfg.erank_eps)
-
-            ax = axes[0, col]
-            vabs = max(abs(J_np.min()), abs(J_np.max()))
-            if vabs > 0:
-                norm = TwoSlopeNorm(vmin=-vabs, vcenter=0, vmax=vabs)
-            else:
-                norm = None
-            ax.imshow(J_np, cmap="RdBu_r", norm=norm, aspect="auto",
-                      interpolation="nearest")
-            ax.set_title(f"iter {it}\ner={er:.1f}", fontsize=8)
-
-            row_labels, obs_groups = self._plot_labels(a_dim, o_dim)
-            ax.set_yticks(range(a_dim))
-            ax.set_yticklabels(row_labels, fontsize=5)
-            ax.tick_params(axis="x", labelsize=5)
-
-            # Obs group separators
-            for _, g_start, _ in obs_groups:
-                if 0 < g_start < o_dim:
-                    ax.axvline(g_start - 0.5, color="k",
-                               linewidth=0.4, alpha=0.3)
-            if obs_groups:
-                for i in range(3, a_dim, 3):
-                    ax.axhline(i - 0.5, color="k", linewidth=0.4, alpha=0.3)
-
-        fig.suptitle("Jacobian Evolution", fontsize=11)
-        fig.tight_layout()
-        fig.savefig(out / f"jacobian_evolution.{self.cfg.plot_format}",
-                    dpi=self.cfg.plot_dpi, bbox_inches="tight")
+        fig, axes = self._jacobian_figure(mats[0][1].numpy(), rows=len(mats))
+        for row, (it, J) in enumerate(mats):
+            ax = axes[row, 0]
+            er = effective_rank(torch.linalg.svdvals(J), self.cfg.erank_eps)
+            im = ax.imshow(J.numpy(), cmap=CMAP_DIVERGING, norm=norm, aspect="auto",
+                           interpolation="nearest")
+            self._label_jacobian(ax, a_dim, o_dim, PALETTE["ghost"],
+                                 show_x=row == len(mats) - 1)
+            ax.set_title(f"Iteration {it} (erank {er:.1f})", loc="left")
+        _colorbar(fig, im, axes[:, 0].tolist(), r"$\partial a_i / \partial o_j$")
+        save_figure(fig, out / "jacobian_evolution")
         plt.close(fig)
 
     def _plot_spectral_evolution(self, out):
-        sdir = self._log_dir / "spectra"
-        sfiles = sorted(sdir.glob("actor_spectra_*.pt"),
-                        key=lambda p: int(p.stem.split("_")[-1]))
+        sfiles = _checkpoint_files(self._log_dir / "spectra", "actor_spectra_*.pt", 4)
         if not sfiles:
             return
-        n = min(4, len(sfiles))
-        idxs = np.linspace(0, len(sfiles) - 1, n, dtype=int)
-        sel = [sfiles[i] for i in idxs]
-
-        first = torch.load(sel[0], weights_only=True)
-        lnames = list(first.keys())
-        nl = len(lnames)
-
-        fig, axes = plt.subplots(nl, n, figsize=(n * 3, nl * 2.2),
-                                 squeeze=False)
-        for col, sf in enumerate(sel):
-            sp = torch.load(sf, weights_only=True)
-            it = int(sf.stem.split("_")[-1])
+        spectra = [(it, torch.load(sf, weights_only=True)) for it, sf in sfiles]
+        lnames = list(spectra[0][1].keys())
+        nl, n = len(lnames), len(spectra)
+        fig, axes = plt.subplots(nl, n, figsize=(FULL_WIDTH, nl * 0.95 + 0.3),
+                                 sharex="row", sharey="row", squeeze=False,
+                                 layout="constrained")
+        color = self._arch_color()
+        for col, (it, sp) in enumerate(spectra):
             for row, ln in enumerate(lnames):
                 S = sp[ln].numpy()
                 S_n = S / S.max()
                 ax = axes[row, col]
-                ax.semilogy(S_n, linewidth=1.0, color="#2E86AB")
-                ax.fill_between(range(len(S_n)), S_n,
-                                alpha=0.1, color="#2E86AB")
+                ax.semilogy(S_n, linewidth=0.9, color=color, zorder=3)
+                ax.fill_between(range(len(S_n)), S_n, alpha=0.15, color=color, zorder=2)
+                style_axes(ax)
                 er = effective_rank(torch.tensor(S), self.cfg.erank_eps)
+                ax.text(0.95, 0.92, f"erank {er:.1f}", transform=ax.transAxes,
+                        ha="right", va="top", fontsize=7.5)
                 if row == 0:
-                    ax.set_title(f"iter {it}", fontsize=8)
+                    ax.set_title(f"Iteration {it}")
                 if col == 0:
-                    ax.set_ylabel(ln.split("_", 2)[-1][:20], fontsize=7)
-                ax.text(0.95, 0.95, f"er={er:.1f}", transform=ax.transAxes,
-                        fontsize=6, ha="right", va="top")
-                ax.tick_params(labelsize=5)
-
-        fig.suptitle("Weight Spectral Decay (actor)", fontsize=11)
-        fig.tight_layout()
-        fig.savefig(out / f"spectral_evolution.{self.cfg.plot_format}",
-                    dpi=self.cfg.plot_dpi, bbox_inches="tight")
+                    ax.set_ylabel(rf"$W_{{{row}}}$  $\sigma_i/\sigma_1$")
+                if row == nl - 1:
+                    ax.set_xlabel("Index")
+        save_figure(fig, out / "spectral_evolution")
         plt.close(fig)
 
-    def _plot_collapse_indicators(self, all_h, out):
-        keys = [
-            ("investigator/actor/preact_norm", "Pre-activation L2 norm"),
-            ("investigator/actor/dead_neuron_frac", "Dead neuron fraction"),
-            ("investigator/policy/action_mean_variance", "Policy variance"),
-        ]
-        fig, axes = plt.subplots(1, len(keys),
-                                 figsize=(len(keys) * 4.5, 3.5))
-        for ax, (k, t) in zip(axes, keys):
-            for label, h in all_h:
-                if k in h:
-                    its, vs = zip(*h[k])
-                    ax.plot(its, vs, label=label, linewidth=1.2)
-            ax.set_title(t, fontsize=9)
-            ax.set_xlabel("iteration")
-            ax.legend(fontsize=7)
-            ax.grid(True, alpha=0.3)
-        fig.suptitle("Collapse Indicators", fontsize=11, y=1.02)
-        fig.tight_layout()
-        fig.savefig(out / f"collapse_indicators.{self.cfg.plot_format}",
-                    dpi=self.cfg.plot_dpi, bbox_inches="tight")
-        plt.close(fig)
+
+# ===================================================================
+# Plot helpers
+# ===================================================================
+
+def _symmetric_norm(a: np.ndarray):
+    vabs = float(np.abs(a).max()) if a.size else 0.0
+    return TwoSlopeNorm(vmin=-vabs, vcenter=0.0, vmax=vabs) if vabs > 0 else None
+
+
+def _colorbar(fig, im, ax, label: str | None):
+    cb = fig.colorbar(im, ax=ax, fraction=0.05, pad=0.02, aspect=25)
+    cb.outline.set_linewidth(0.5)
+    cb.outline.set_edgecolor(PALETTE["edge"])
+    cb.ax.tick_params(length=2.0, width=0.5)
+    if label:
+        cb.set_label(label)
+    return cb
+
+
+def _checkpoint_files(directory: Path, pattern: str, max_n: int) -> list[tuple[int, Path]]:
+    """Up to max_n evenly spaced (iteration, path) pairs, oldest first."""
+    files = sorted(((int(p.stem.rsplit("_", 1)[1]), p) for p in directory.glob(pattern)))
+    if not files:
+        return []
+    n = min(max_n, len(files))
+    return [files[i] for i in np.linspace(0, len(files) - 1, n, dtype=int)]
+
+
+def _read_layout(inv_dir: Path) -> dict:
+    p = Path(inv_dir) / "layout.json"
+    return json.loads(p.read_text()) if p.exists() else {}
+
+
+def _plot_history_panels(runs, keys, ylabel: str | None):
+    """One panel per history key, one line per run (architecture color, paper name)."""
+    styles = run_styles([(label, arch) for label, arch, _ in runs])
+    fig, axes = plt.subplots(1, len(keys), figsize=(FULL_WIDTH, 1.9), squeeze=False,
+                             layout="constrained")
+    for ax, (k, title) in zip(axes[0], keys):
+        for label, _, h in runs:
+            if h.get(k):
+                its, vs = zip(*h[k])
+                ax.plot(its, vs, label=paper_name(label), linewidth=1.0, zorder=3,
+                        marker="o" if len(its) < 8 else None, markersize=3.0,
+                        markeredgecolor=PALETTE["edge"], markeredgewidth=0.4, **styles[label])
+        ax.set_title(title)
+        ax.set_xlabel("Iteration")
+        ax.xaxis.set_major_locator(matplotlib.ticker.MaxNLocator(integer=True, nbins=5))
+        style_axes(ax)
+    if ylabel:
+        axes[0, 0].set_ylabel(ylabel)
+    if len(runs) > 1:
+        axes[0, 0].legend(loc="best")
+    return fig
 
 
 # ===================================================================
@@ -1588,72 +1480,62 @@ def compare_experiments(
     """Compare investigator outputs across experiments.
 
     Args:
-        experiment_dirs: {label: path_to_investigator_dir}
+        experiment_dirs: {label: path_to_investigator_dir}; labels may be W&B config ids,
+            which are shown with their paper names.
     """
 
     out = Path(output_dir)
-    out.mkdir(parents=True, exist_ok=True)
-
-    all_h = []
+    runs = []
     for label, d in experiment_dirs.items():
         hp = Path(d) / "history.json"
         if hp.exists():
-            with open(hp) as f:
-                all_h.append((label, json.load(f)))
-
-    if not all_h:
+            runs.append((label, _read_layout(d).get("arch") or arch_of(label),
+                         json.loads(hp.read_text())))
+    if not runs:
         return
 
-    # Feature erank comparison
-    fig, ax = plt.subplots(figsize=(10, 5))
-    for label, h in all_h:
-        k = "investigator/actor/feature_erank"
-        if k in h:
-            its, vs = zip(*h[k])
-            ax.plot(its, vs, label=label, linewidth=1.5)
-    ax.set_xlabel("iteration")
-    ax.set_ylabel("effective rank")
-    ax.set_title("Actor Feature erank -- Cross-Architecture")
-    ax.legend()
-    ax.grid(True, alpha=0.3)
-    fig.tight_layout()
-    fig.savefig(out / "cmp_feature_erank.png", dpi=150, bbox_inches="tight")
+    fig = _plot_history_panels(
+        runs, [("investigator/actor/feature_erank", "Feature")], "Effective rank")
+    fig.set_size_inches(COLUMN_WIDTH, 2.2)
+    save_figure(fig, out / "cmp_feature_erank")
     plt.close(fig)
 
-    # Gram side-by-side
+    styles = run_styles([(label, arch) for label, arch, _ in runs])
     ne = len(experiment_dirs)
-    fig, axes = plt.subplots(2, ne, figsize=(ne * 3.5, 7),
-                             height_ratios=[3, 1], squeeze=False)
+    side = FULL_WIDTH / max(ne, 2)
+    fig, axes = plt.subplots(2, ne, figsize=(FULL_WIDTH, side + 1.1),
+                             height_ratios=[side, 1.0], squeeze=False, layout="constrained")
+    im = None
     for col, (label, d) in enumerate(experiment_dirs.items()):
-        gdir = Path(d) / "grams"
-        gfiles = sorted(gdir.glob("gram_*.pt"),
-                        key=lambda p: int(p.stem.split("_")[1]))
-        if not gfiles:
+        gfiles = _checkpoint_files(Path(d) / "grams", "gram_*.pt", 1 << 30)
+        if not gfiles or label not in styles:
+            axes[0, col].set_axis_off()
+            axes[1, col].set_axis_off()
             continue
-        gram = torch.load(gfiles[-1], weights_only=True)
-        g_np = gram.numpy()
-        it = int(gfiles[-1].stem.split("_")[1])
-
-        _, Sg, _ = torch.linalg.svd(gram)
+        it, gf = gfiles[-1]
+        gram = torch.load(gf, weights_only=True)
+        Sg = torch.linalg.svdvals(gram)
         er = effective_rank(Sg)
 
         ax_g = axes[0, col]
-        norm_v, cmap = _gram_colornorm(g_np)
-        ax_g.imshow(g_np, cmap=cmap, norm=norm_v,
-                    aspect="equal", interpolation="nearest")
-        ax_g.set_title(f"{label}\niter {it} | er={er:.1f}", fontsize=9)
+        im = ax_g.imshow(np.clip(gram.numpy(), 0.0, 1.0), cmap=CMAP_SEQUENTIAL, vmin=0.0, vmax=1.0,
+                         interpolation="antialiased")
+        ax_g.set_xticks([])
+        ax_g.set_yticks([])
+        ax_g.set_title(f"{paper_name(label)}\niteration {it}, erank {er:.1f}")
 
         ax_s = axes[1, col]
         Sn = (Sg / Sg.sum()).numpy()
-        ax_s.semilogy(Sn, color="#2E86AB", linewidth=1.0)
-        ax_s.axhline(1 / len(Sn), color="#A23B72",
-                     linestyle="--", linewidth=.6)
+        ax_s.semilogy(Sn, color=styles[label]["color"], linewidth=0.9, zorder=3)
+        ax_s.axhline(1 / len(Sn), color=PALETTE["ghost"], linestyle="--", linewidth=0.6,
+                     zorder=2)
+        style_axes(ax_s)
+        ax_s.set_xlabel("Index")
         if col == 0:
-            ax_s.set_ylabel("norm sigma", fontsize=7)
-
-    fig.suptitle("Gram Comparison (final checkpoint)", fontsize=12)
-    fig.tight_layout()
-    fig.savefig(out / "cmp_grams.png", dpi=150, bbox_inches="tight")
+            ax_s.set_ylabel(r"Normalized $\sigma_i$")
+    if im is not None:
+        _colorbar(fig, im, axes[0, :].tolist(), "Cosine similarity")
+    save_figure(fig, out / "cmp_grams")
     plt.close(fig)
     print(f"Comparison -> {out}")
 
@@ -1683,8 +1565,7 @@ if __name__ == "__main__":
         inv.cfg = InvestigatorCfg()
         inv._log_dir = Path(args.log_dir)
         inv._history = {}
-        inv._sort_indices = None
-        obs_p = inv._log_dir / "fixed_eval_obs.pt"
-        if obs_p.exists():
-            inv._fixed_eval_obs = torch.load(obs_p, weights_only=True)
+        inv._layout = _read_layout(inv._log_dir)
+        sort_p = inv._log_dir / "sort_indices.pt"
+        inv._sort_indices = torch.load(sort_p, weights_only=True) if sort_p.exists() else None
         inv.generate_report(compare_dirs=args.compare)

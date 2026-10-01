@@ -11,9 +11,24 @@ To install this project, you can use the `uv` package manager.
 2. **Install dependencies**
 
     ```bash
-    git submodule update --init IsaacLab-upstream
+    git submodule update --init IsaacLab
     uv sync --locked
     ```
+
+## W&B setup
+
+```bash
+uv run wandb login
+export WANDB_PROJECT="<your-project>"
+# Optional team; otherwise use the authenticated account.
+export WANDB_ENTITY="<your-team>"
+```
+
+Use `--logger wandb`; project comes from `WANDB_PROJECT` or `--log_project_name`.
+Keep credentials out of the repository.
+
+Accept the NVIDIA Omniverse EULA on first use; afterward set
+`OMNI_KIT_ACCEPT_EULA=YES` for noninteractive runs.
 
 ## Train and Play
 

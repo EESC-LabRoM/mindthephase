@@ -6,7 +6,7 @@
 """Fetch W&B training data as a sparse LLM-friendly summary.
 
 Usage:
-    python scripts/rsl_rl/wandb_loader.py --run <display_name> [--slices 5] [--human]
+    python scripts/rsl_rl/wandb_loader.py --run <run_id|display_name> [--slices 5] [--human]
 """
 
 from pathlib import Path
@@ -16,6 +16,7 @@ from dotenv import load_dotenv
 load_dotenv(dotenv_path=Path(__file__).parents[2] / ".env")
 
 import argparse
+import os
 
 import numpy as np
 import wandb
@@ -37,8 +38,6 @@ METRICS = {
     "policy_noise": "policy/mean_noise_std",
 }
 
-ENTITY = "tommaselli"
-PROJECT = "mymind"
 
 
 def fetch_history(run, metrics: dict) -> dict[str, list[tuple[int, float]]]:
@@ -62,9 +61,10 @@ def compute_slices(data: dict, n_slices: int) -> list[dict]:
     for i in range(n_slices):
         lo = step_min + i * window
         hi = step_min + (i + 1) * window
+        last = i == n_slices - 1
         metrics_out = {}
         for name, series in data.items():
-            vals = [v for s, v in series if lo <= s < hi]
+            vals = [v for s, v in series if lo <= s < hi or (last and s == step_max)]
             metrics_out[name] = (np.mean(vals), np.std(vals)) if vals else None
         slices.append({"range": (int(lo), int(hi)), "metrics": metrics_out})
     return slices
@@ -104,14 +104,33 @@ def format_human(run_name: str, total_steps: int | str, slices: list) -> str:
     return "\n".join(lines)
 
 
+def resolve_run(api, entity: str, project: str, ref: str):
+    """Return the W&B run for a run ID or a unique display name; error if ambiguous."""
+    matched = list(api.runs(f"{entity}/{project}", filters={"display_name": ref}))
+    if len(matched) > 1:
+        ids = ", ".join(r.id for r in matched)
+        raise ValueError(f"display name '{ref}' matches several runs ({ids}); pass a run ID")
+    if matched:
+        return matched[0]
+    try:
+        return api.run(f"{entity}/{project}/{ref}")
+    except wandb.errors.CommError as e:
+        raise ValueError(f"run '{ref}' not found in {entity}/{project}") from e
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__.splitlines()[1])
-    p.add_argument("--run", default=None, help="W&B run display name (default: latest run in project)")
+    p.add_argument("--run", default=None,
+                   help="W&B run ID or unique display name (default: latest run in project)")
     p.add_argument("--slices", type=int, default=5, help="Number of step windows (default: 5)")
     p.add_argument("--human", action="store_true", default=False, help="Human-readable output")
-    p.add_argument("--entity", default=ENTITY)
-    p.add_argument("--project", default=PROJECT)
+    p.add_argument("--entity", default=os.environ.get("WANDB_ENTITY"))
+    p.add_argument("--project", default=os.environ.get("WANDB_PROJECT"))
     args = p.parse_args()
+    if not args.entity or not args.project:
+        p.error("Set WANDB_ENTITY and WANDB_PROJECT or pass --entity and --project.")
+    if args.slices < 1:
+        p.error("--slices must be at least 1.")
 
     api = wandb.Api()
     if args.run is None:
@@ -122,11 +141,11 @@ def main():
         run = runs[0]
         args.run = run.name
     else:
-        runs = list(api.runs(f"{args.entity}/{args.project}", filters={"display_name": args.run}))
-        if not runs:
-            print(f"ERROR: run '{args.run}' not found in {args.entity}/{args.project}")
+        try:
+            run = resolve_run(api, args.entity, args.project, args.run)
+        except ValueError as e:
+            print(f"ERROR: {e}")
             return
-        run = runs[0]
 
     total_steps = run.summary.get("_step", "?")
     print(f"[wandb_loader] fetching {len(METRICS)} metrics for '{args.run}' ({run.id})…", flush=True)

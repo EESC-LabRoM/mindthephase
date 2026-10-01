@@ -49,6 +49,18 @@ parser.add_argument(
     default=None,
     help="Run name -- becomes the log folder under logs/rsl_rl/ and the wandb run name. Falls back to a timestamp.",
 )
+parser.add_argument(
+    "--checkpoint_interval",
+    type=int,
+    default=None,
+    help="Investigator: Gram/Jacobian/phase metrics every N iterations (the last iteration is always measured).",
+)
+parser.add_argument(
+    "--phase_min_samples",
+    type=int,
+    default=None,
+    help="Investigator: minimum live states per contact phase for its rank estimates.",
+)
 # append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)
 # append AppLauncher cli args
@@ -86,13 +98,13 @@ from isaaclab.envs import (
 from isaaclab.utils.dict import print_dict
 from isaaclab.utils.io import dump_yaml
 from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlVecEnvWrapper
-from isaaclab_tasks.utils import get_checkpoint_path
 from isaaclab_tasks.utils.hydra import hydra_task_config
 
 # Import the standard IsaacLab tasks. Register MyRelic tasks only when requested.
 import isaaclab_tasks  # noqa: F401  # registers the built-in IsaacLab tasks
 if args_cli.task and (
-    args_cli.task.startswith("Isaac-Spot-Locomotion-") or args_cli.task.endswith("-Simba-v0")
+    args_cli.task.startswith(("Isaac-Spot-Locomotion-", "Isaac-Velocity-Flat-Spot-MLP-"))
+    or args_cli.task.endswith("-Simba-v0")
 ):
     import mind.tasks  # noqa: F401
 from investigator import Investigator, InvestigatorCfg, make_contact_phase_fn
@@ -111,6 +123,8 @@ def main(
     """Train with RSL-RL agent."""
     # override configurations with non-hydra CLI arguments
     agent_cfg = cli_args.update_rsl_rl_cfg(agent_cfg, args_cli)
+    if agent_cfg.logger == "wandb" and not agent_cfg.wandb_project:
+        raise ValueError("Set WANDB_PROJECT or pass --log_project_name.")
     env_cfg.scene.num_envs = (
         args_cli.num_envs if args_cli.num_envs is not None else env_cfg.scene.num_envs
     )
@@ -137,7 +151,9 @@ def main(
     log_dir = os.path.join(log_root_path, run_name)
     print(f"[INFO] Logging experiment in directory: {log_dir}")
     if os.path.exists(log_dir) and not agent_cfg.resume:
-        print(f"[WARN] {log_dir} already exists -- existing files may be overwritten.")
+        raise FileExistsError(
+            f"{log_dir} already exists. Choose a new --name, or pass --resume to continue it."
+        )
 
     # create isaac environment
     env = gym.make(
@@ -155,7 +171,8 @@ def main(
         print_dict(video_kwargs, nesting=4)
         env = gym.wrappers.RecordVideo(env, **video_kwargs)
 
-        # Upload completed videos to wandb
+        # Upload completed videos to wandb at the training iteration being collected,
+        # so they share the row RSL-RL logs with step=iteration.
         import wandb as _wandb
         _rec = env  # bind RecordVideo instance before env gets reassigned
         _orig_stop = _rec.stop_recording
@@ -165,7 +182,11 @@ def main(
             if name is not None:
                 path = os.path.join(_rec.video_folder, f"{name}.mp4")
                 if os.path.exists(path) and _wandb.run is not None:
-                    _wandb.log({"train/video": _wandb.Video(path, fps=30, format="mp4")})
+                    iteration = video_start_iter + (_rec.step_id - 1) // agent_cfg.num_steps_per_env
+                    _wandb.log(
+                        {"train/video": _wandb.Video(path, fps=30, format="mp4")},
+                        step=iteration,
+                    )
         _rec.stop_recording = _stop_and_log
 
     # convert to single-agent instance if required by the RL algorithm
@@ -184,31 +205,37 @@ def main(
     # save resume path before creating a new log_dir
     if agent_cfg.resume:
         # get path to previous checkpoint
-        resume_path = get_checkpoint_path(
-            log_root_path, agent_cfg.load_run, agent_cfg.load_checkpoint
+        resume_path = cli_args.find_checkpoint(
+            log_root_path, args_cli.task, agent_cfg.load_run, agent_cfg.load_checkpoint
         )
         print(f"[INFO]: Loading model checkpoint from: {resume_path}")
         # load previously trained model
         runner.load(resume_path)
+    video_start_iter = runner.current_learning_iteration
 
-    # dump the configuration into log-directory in a background thread
-    import threading
-    def _save_configs():
-        dump_yaml(os.path.join(log_dir, "params", "env.yaml"), env_cfg)
-        dump_yaml(os.path.join(log_dir, "params", "agent.yaml"), agent_cfg)
-        with open(os.path.join(log_dir, "params", "env.pkl"), "wb") as f:
-            pickle.dump(env_cfg, f)
-        with open(os.path.join(log_dir, "params", "agent.pkl"), "wb") as f:
-            pickle.dump(agent_cfg, f)
-
-    threading.Thread(target=_save_configs, daemon=True).start()
+    # dump the configuration and task identity into the log directory
+    dump_yaml(os.path.join(log_dir, "params", "env.yaml"), env_cfg)
+    dump_yaml(os.path.join(log_dir, "params", "agent.yaml"), agent_cfg)
+    with open(os.path.join(log_dir, "params", "env.pkl"), "wb") as f:
+        pickle.dump(env_cfg, f)
+    with open(os.path.join(log_dir, "params", "agent.pkl"), "wb") as f:
+        pickle.dump(agent_cfg, f)
+    with open(os.path.join(log_dir, cli_args.TASK_FILE), "w") as f:
+        f.write(args_cli.task + "\n")
 
     # -- Investigator setup (representation rank analysis) --
     is_spot_task = args_cli.task.startswith("Isaac-Spot-Locomotion-")
-    investigator = Investigator(runner, cfg=InvestigatorCfg(spot_labels=is_spot_task))
+    investigator_cfg = InvestigatorCfg()
+    if args_cli.checkpoint_interval is not None:
+        investigator_cfg.checkpoint_interval = args_cli.checkpoint_interval
+    if args_cli.phase_min_samples is not None:
+        investigator_cfg.min_samples_per_phase = args_cli.phase_min_samples
+    investigator = Investigator(runner, cfg=investigator_cfg)
     phase_fn, phase_contact_count = make_contact_phase_fn(env, args_cli.task)
     investigator.install(
+        # Spot policy obs 9:12 are the velocity commands (vx, vy, yaw rate).
         sort_fn=(lambda obs: obs[:, 9:12].norm(dim=-1)) if is_spot_task else None,
+        sort_label=r"$|c_v|$",
         phase_fn=phase_fn,
         phase_contact_count=phase_contact_count,
     )
@@ -218,8 +245,17 @@ def main(
         num_learning_iterations=agent_cfg.max_iterations, init_at_random_ep_len=True
     )
 
-    # post-hoc matplotlib report (supplementary to wandb)
+    # post-hoc matplotlib report, then upload it with the analysis artifact
     investigator.generate_report()
+    investigator.upload_artifact()
+
+    # Finish logging before simulation_app.close(): Isaac Sim's fast shutdown skips
+    # Python atexit, which would otherwise drop the final W&B row and exit record.
+    if runner.writer is not None:
+        if runner.logger_type in ("wandb", "neptune"):
+            runner.writer.stop()
+        else:
+            runner.writer.close()
 
     # close the simulator
     env.close()

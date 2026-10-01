@@ -66,7 +66,7 @@ from isaaclab_rl.rsl_rl import (
     RslRlOnPolicyRunnerCfg,
     RslRlVecEnvWrapper,
 )
-from isaaclab_tasks.utils import get_checkpoint_path, parse_env_cfg
+from isaaclab_tasks.utils import parse_env_cfg
 from mind.assets.spot.constants import (
     ORDERED_JOINT_NAMES_SPOT_ARM,
     ORDERED_JOINT_NAMES_SPOT_BASE,
@@ -138,7 +138,10 @@ class _OnnxPolicyExporter(torch.nn.Module):
         joint_pos,
         joint_vel,
         last_actions,
+        height_commands,
+        base_orientation_commands,
     ):
+        # Same term order as the policy observation group (65 dims for Spot).
         obs = torch.cat(
             [
                 base_lin_vel,
@@ -148,6 +151,8 @@ class _OnnxPolicyExporter(torch.nn.Module):
                 joint_pos-self.shift,
                 joint_vel,
                 (last_actions - self.shift[:12])/self.scale,
+                height_commands,
+                base_orientation_commands,
             ],
             dim=-1,
         )
@@ -166,6 +171,8 @@ class _OnnxPolicyExporter(torch.nn.Module):
             torch.zeros(1, 19), # joint_pos
             torch.zeros(1, 19), # joint_vel
             torch.zeros(1, 12), # actions
+            torch.zeros(1, 1),  # height_commands
+            torch.zeros(1, 2),  # base_orientation_commands
         )
         input_names = [
             "base_linear_velocity",
@@ -175,6 +182,8 @@ class _OnnxPolicyExporter(torch.nn.Module):
             "joint_positions",
             "joint_velocities",
             "last_actions",
+            "height_commands",
+            "base_orientation_commands",
         ]
         torch.onnx.export(
             self,
@@ -217,18 +226,17 @@ def main():
     env_cfg.actions.joint_pos.use_default_offset = False   
 
 
-    # specify directory for logging experiments
-    checkpoint_arg = args_cli.checkpoint if args_cli.checkpoint else agent_cfg.load_checkpoint
-    if checkpoint_arg and os.path.isfile(checkpoint_arg):
-        resume_path = os.path.abspath(checkpoint_arg)
-        log_dir = os.path.dirname(resume_path)
+    # resolve checkpoint path (flat layout: logs/rsl_rl/<run>/)
+    if args_cli.checkpoint is not None and os.path.isfile(args_cli.checkpoint):
+        resume_path = os.path.abspath(args_cli.checkpoint)
         print(f"[INFO] Loading checkpoint from direct path: {resume_path}")
     else:
-        log_root_path = os.path.join("logs", "rsl_rl", agent_cfg.experiment_name)
-        log_root_path = os.path.abspath(log_root_path)
+        log_root_path = os.path.abspath(os.path.join("logs", "rsl_rl"))
         print(f"[INFO] Loading experiment from directory: {log_root_path}")
-        resume_path = get_checkpoint_path(log_root_path, agent_cfg.load_run, agent_cfg.load_checkpoint)
-        log_dir = os.path.dirname(resume_path)
+        resume_path = cli_args.find_checkpoint(
+            log_root_path, args_cli.task, agent_cfg.load_run, agent_cfg.load_checkpoint
+        )
+    log_dir = os.path.dirname(resume_path)
 
     # create isaac environment
     env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array" if args_cli.video else None)
@@ -308,7 +316,8 @@ def main():
         # run everything in inference mode
         with torch.inference_mode():
             # agent stepping
-            obs_dict = obs["spot"]
+            # policy group as a dict of terms (absolute joint positions, see above)
+            obs_dict = obs["policy"]
             # Convert dict of tensors to dict of numpy arrays for ONNX
             onnx_inputs = {
                 "base_linear_velocity": obs_dict["base_lin_vel"].detach().cpu().numpy(),
@@ -318,6 +327,8 @@ def main():
                 "joint_positions": obs_dict["joint_pos"].detach().cpu().numpy(),
                 "joint_velocities": obs_dict["joint_vel"].detach().cpu().numpy(),
                 "last_actions": obs_dict["actions"].detach().cpu().numpy(),
+                "height_commands": obs_dict["height_commands"].detach().cpu().numpy(),
+                "base_orientation_commands": obs_dict["base_orientation_commands"].detach().cpu().numpy(),
             }
             onnx_outputs = ort_session.run(None, onnx_inputs)
             actions = torch.from_numpy(onnx_outputs[0]).to(device=env.unwrapped.device)
