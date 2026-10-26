@@ -71,7 +71,7 @@ def left_right_symmetry_base_joint_pos(obs: torch.Tensor):
         dim=-1,
     )
 
-    swapped_obs[..., ::3] = -swapped_obs[..., ::3]  # Negate hip joints
+    swapped_obs[..., ::3] = -swapped_obs[..., ::3]
 
     return swapped_obs
 
@@ -112,7 +112,6 @@ def left_right_symmetry_height_scan(
 
     For left-right symmetry, the y-coordinates of the height scan points are flipped.
     """
-    # Get the number of environments
     num_envs = obs.shape[0]
     obs_sym = obs.clone()
 
@@ -120,11 +119,8 @@ def left_right_symmetry_height_scan(
         "Only 'xy' ordering is supported in left-right symmetry for height scan."
     )
 
-    # 1. Reshape from (num_envs, num_rays * 3) to (num_envs, num_rays)
     obs_unflattened = obs_sym.reshape(num_envs, dim_y, dim_x)
-    # 2. Flip the order of the rays along the num_rays dimension (dim=1)
     obs_unflattened = obs_unflattened.flip(dims=[1])
-    # 4. Flatten back to the original shape (num_envs, num_rays * 3)
     obs_sym_flat = obs_unflattened.reshape(num_envs, -1)
 
     return obs_sym_flat
@@ -133,16 +129,13 @@ def left_right_symmetry_height_scan(
 def height_scan(
     env: ManagerBasedEnv,
     sensor_cfg: SceneEntityCfg,
-    # robot_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
     offset: float = 0.5,
 ) -> torch.Tensor:
     """Height scan from the given sensor w.r.t. the sensor's frame.
 
     The provided offset (Defaults to 0.5) is subtracted from the returned values.
     """
-    # extract the used quantities (to enable type-hinting)
     sensor: RayCaster = env.scene.sensors[sensor_cfg.name]
-    # robot: Articulation = env.scene[robot_cfg.name]
 
     z_data = (
         sensor.data.pos_w[:, 2].unsqueeze(1) - sensor.data.ray_hits_w[..., 2] - offset
@@ -165,20 +158,16 @@ def height_scan_xyz(
 
     sensor: RayCaster = env.scene.sensors[sensor_cfg.name]
 
-    # Sensor position in world frame -> shape: (N, 3)
     sensor_pos_z = sensor.data.pos_w[:, 2]
     z_data = sensor_pos_z.unsqueeze(1) - sensor.data.ray_hits_w[..., 2] - offset
     is_nan = torch.isinf(z_data)
     z_data[is_nan] = -1.0
 
-    # Get the local coordinates of the rays
-    # Ray hit points in world frame -> shape: (N, B, 3)
     relative_xyz = sensor.data.ray_hits_w.clone()
     relative_xyz[..., 0] = sensor.ray_starts[..., 0]
     relative_xyz[..., 1] = sensor.ray_starts[..., 1]
     relative_xyz[..., 2] = z_data
 
-    # Flatten to shape: (N, num_rays*3)
     hits_flat = relative_xyz.reshape(relative_xyz.shape[0], -1)
 
     return hits_flat
@@ -191,7 +180,6 @@ def left_right_symmetry_height_scan_ame(
 
     For left-right symmetry, the y-coordinates of the height scan points are flipped.
     """
-    # Get the number of environments
     num_envs = obs.shape[0]
     obs_sym = obs.clone()
 
@@ -221,7 +209,7 @@ def left_right_symmetry_base_orientation_commands(obs: torch.Tensor) -> torch.Te
     Under left-right reflection (across X-Z plane), roll is negated and pitch is invariant.
     """
     obs_sym = obs.clone()
-    obs_sym[..., 0] = -obs_sym[..., 0]  # negate roll
+    obs_sym[..., 0] = -obs_sym[..., 0]
     return obs_sym
 
 

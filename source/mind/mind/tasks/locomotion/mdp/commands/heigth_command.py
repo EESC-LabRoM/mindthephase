@@ -26,16 +26,12 @@ class UniformHeightCommand(CommandTerm):
             cfg: The configuration parameters for the command term.
             env: The environment object.
         """
-        # initialize the base class
         super().__init__(cfg, env)
 
-        # create buffers to store the command
         self.height_command = torch.zeros(self.num_envs, 1, device=self.device)
 
-        # obtain the asset
         self.asset: RigidObject = env.scene[cfg.asset_name]
 
-        # -- metrics
         self.metrics["height_error"] = torch.zeros(self.num_envs, device=self.device)
 
     def __str__(self) -> str:

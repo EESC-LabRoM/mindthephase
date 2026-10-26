@@ -6,8 +6,6 @@ from isaaclab_rl.rsl_rl import RslRlPpoActorCriticCfg
 
 @configclass
 class SimbaPolicyCfg(RslRlPpoActorCriticCfg):
-    """The fork's two-block SimBa trunk, adapted to RSL RL's ActorCritic API."""
-
     class_name: str = (
         "__import__('mind.rsl_rl.simba', fromlist=['SimbaActorCritic']).SimbaActorCritic"
     )

@@ -1,10 +1,3 @@
-"""Paper figure style shared by the Investigator report and comparison plots.
-
-Mirrors the camera-ready figure scripts (`camera-ready/fig{3,5,7}.py`): palette,
-serif fonts, sizes, widths, and PNG (300 dpi) + PDF output. W&B native charts are
-not affected; only matplotlib figures produced by this repo.
-"""
-
 from __future__ import annotations
 
 from pathlib import Path
@@ -31,7 +24,7 @@ RC = {
     "font.family": "serif",
     "font.serif": ["Times New Roman", "Times", "STIXGeneral", "DejaVu Serif"],
     "mathtext.fontset": "stix",
-    "mathtext.default": "regular",  # math follows the (bold) text font
+    "mathtext.default": "regular",
     "font.weight": "bold",
     "axes.titleweight": "bold",
     "axes.labelweight": "bold",
@@ -59,18 +52,15 @@ RC = {
     "savefig.facecolor": PALETTE["background"],
 }
 
-# Signed values (Jacobians, activations, weights, signed Gram): navy < 0 < crimson.
 CMAP_DIVERGING = LinearSegmentedColormap.from_list(
     "mtp_diverging",
     [PALETTE["mlp"], PALETTE["muted_mlp"], PALETTE["background"],
-     PALETTE["muted_simba"], PALETTE["simba"]],
+        PALETTE["muted_simba"], PALETTE["simba"]],
 )
-# Non-negative values (Gram similarity, Jacobian std): white -> navy.
 CMAP_SEQUENTIAL = LinearSegmentedColormap.from_list(
     "mtp_sequential", [PALETTE["background"], PALETTE["muted_mlp"], PALETTE["mlp"]]
 )
 
-# W&B config ids never appear in figures; legends use the paper names.
 PAPER_NAMES = {
     "mlp1": "MLP-XS",
     "mlp2": "MLP-S",
@@ -123,7 +113,7 @@ def style_axes(ax, grid_axis: str = "both") -> None:
     ax.tick_params(length=2.0, width=0.6)
 
 
-FHD_WIDTH_PX = 1920 * 1.1  # margin: bbox_inches="tight" crops the canvas
+FHD_WIDTH_PX = 1920 * 1.1
 
 
 def figure_dpi(fig) -> float:
@@ -132,7 +122,10 @@ def figure_dpi(fig) -> float:
 
 
 def figure_image(fig):
-    """Tight-cropped RGB PIL image at figure_dpi, for W&B (which otherwise rasterizes at 100 dpi)."""
+    """Tight-cropped RGB PIL image at figure_dpi for W&B.
+
+    W&B otherwise rasterizes at 100 dpi.
+    """
     import io
 
     from PIL import Image

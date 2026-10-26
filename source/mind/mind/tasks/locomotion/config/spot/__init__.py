@@ -4,9 +4,6 @@ import gymnasium as gym
 
 from . import agents, spot_env_cfg
 
-##
-# Register Gym environments.
-##
 
 gym.register(
     id="Isaac-Spot-Locomotion-v0",

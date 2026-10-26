@@ -54,15 +54,33 @@ def reset_base_and_arm_joints_stow(
     base_max_vel = base_default_vel + velocity_range[1]
 
     base_pos_limits = asset.data.soft_joint_pos_limits[env_ids][:, base_joint_ids]
-    base_min_pos = torch.clamp(base_min_pos, min=base_pos_limits[..., 0], max=base_pos_limits[..., 1])
-    base_max_pos = torch.clamp(base_max_pos, min=base_pos_limits[..., 0], max=base_pos_limits[..., 1])
+    base_min_pos = torch.clamp(
+        base_min_pos,
+        min=base_pos_limits[..., 0],
+        max=base_pos_limits[..., 1],
+    )
+    base_max_pos = torch.clamp(
+        base_max_pos,
+        min=base_pos_limits[..., 0],
+        max=base_pos_limits[..., 1],
+    )
 
     base_vel_limits = asset.data.soft_joint_vel_limits[env_ids][:, base_joint_ids]
     base_min_vel = torch.clamp(base_min_vel, min=-base_vel_limits, max=base_vel_limits)
     base_max_vel = torch.clamp(base_max_vel, min=-base_vel_limits, max=base_vel_limits)
 
-    joint_pos[:, base_joint_ids] = sample_uniform(base_min_pos, base_max_pos, base_min_pos.shape, base_min_pos.device)
-    joint_vel[:, base_joint_ids] = sample_uniform(base_min_vel, base_max_vel, base_min_vel.shape, base_min_vel.device)
+    joint_pos[:, base_joint_ids] = sample_uniform(
+        base_min_pos,
+        base_max_pos,
+        base_min_pos.shape,
+        base_min_pos.device,
+    )
+    joint_vel[:, base_joint_ids] = sample_uniform(
+        base_min_vel,
+        base_max_vel,
+        base_min_vel.shape,
+        base_min_vel.device,
+    )
 
     stow_vals = (
         torch.tensor(

@@ -41,7 +41,9 @@ class _SimbaTrunk(nn.Module):
     ) -> None:
         super().__init__()
         if hidden_dim <= 0 or num_blocks < 0:
-            raise ValueError("SimBa requires a positive hidden dimension and a nonnegative block count.")
+            raise ValueError(
+                "SimBa requires a positive hidden dimension and a nonnegative block count."
+            )
         branch_scale = 1.0 / math.sqrt(num_blocks) if depth_scale and num_blocks else 1.0
         self.embed = nn.Linear(input_dim, hidden_dim)
         self.blocks = nn.Sequential(
@@ -58,15 +60,12 @@ class _SimbaTrunk(nn.Module):
         return self.head(self.post_ln(self.blocks(self.embed(x))))
 
     def __getitem__(self, idx: int) -> nn.Linear:
-        # IsaacLab's exporter reads actor[0].in_features for its dummy input.
         if idx != 0:
             raise IndexError(idx)
         return self.embed
 
 
 class SimbaActorCritic(ActorCritic):
-    """Keep RSL RL's PPO and Gaussian policy plumbing while replacing its MLPs."""
-
     def __init__(
         self,
         obs,

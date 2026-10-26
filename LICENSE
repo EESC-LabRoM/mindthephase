@@ -1,11 +1,19 @@
 ## License
 
-Except where otherwise noted, the original code in this repository is
-licensed under the Apache License 2.0.
+This repository combines code under different licenses. A file's own copyright
+and SPDX notice takes precedence over this summary.
 
-The code under `source/mind/mind/actuators` and `source/mind/mind/assets` is derived from software developed by
-Robotics and AI Institute LLC dba RAI Institute and is subject to the
-RAI Institute Research License. 
-
-The code under `scripts/rsl_rl` is subjected to the IsaacLab license.
-
+- Original code and media are licensed under the Apache License 2.0
+  (`licenses/Apache-2.0.txt`).
+- `scripts/rsl_rl/train.py`, `play.py`, `play_onnx.py` and `cli_args.py` are
+  adapted from IsaacLabExtensionTemplate, licensed under the Apache License 2.0
+  (`licenses/Apache-2.0.txt`).
+- The ONNX exporter marked in `scripts/rsl_rl/play_onnx.py` is adapted from
+  Isaac Lab and licensed under the BSD 3-Clause License
+  (`licenses/Isaac-Lab-License.txt`).
+- `source/mind/mind/actuators`, `source/mind/mind/assets`, and other files
+  carrying an RAI Institute copyright notice without an SPDX identifier are
+  derived from software by Robotics and AI Institute LLC dba RAI Institute and
+  are subject to the RAI Institute Research License
+  (`licenses/RAI-Institute-License.txt`). It permits non-commercial research
+  use only.

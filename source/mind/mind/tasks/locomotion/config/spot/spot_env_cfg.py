@@ -36,7 +36,6 @@ class SpotPlayEnvCfg(SpotLocomotionEnvCfg):
         self.scene.num_envs = 2
         self.scene.env_spacing = 0.50
 
-        # Only forward
         self.commands.base_velocity.ranges.lin_vel_y = (0.50, 0.50)
         self.commands.base_velocity.ranges.ang_vel_z = (0.0, 0.0)
         self.commands.base_velocity.ranges.heading = (0.0, 0.0)
@@ -44,22 +43,17 @@ class SpotPlayEnvCfg(SpotLocomotionEnvCfg):
         self.commands.base_orientation.flat_envs = 1.0
         self.commands.base_height.height_range = (0.6, 0.6)
 
-        # No noise
         self.observations.policy.enable_corruption = False
 
-        # flat terraing
         self.scene.terrain.terrain_type = "plane"
 
-        # Remove pushs
         self.events.push_robot = None
         self.events.external_force_torque = None
         self.events.add_leg_mass = None
 
-        # debug view command
         self.commands.base_velocity.debug_vis = True
         self.curriculum = None
 
-        # Deactivate reset randomization
         self.events.reset_base.params["pose_range"]["x"] = (0.0, 0.0)
         self.events.reset_base.params["pose_range"]["y"] = (0.0, 0.0)
         self.events.reset_base.params["pose_range"]["yaw"] = (0.0, 0.0)

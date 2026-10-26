@@ -28,9 +28,13 @@ from mind.tasks.locomotion.mdp import rewards as loco_mdp
 from mind.tasks.locomotion.mdp.actions.fixed_joint_actions import (
     FixedJointPositionActionCfg,
 )
-from mind.tasks.locomotion.mdp.commands.base_orientation_command import UniformBaseOrientationCommandCfg
+from mind.tasks.locomotion.mdp.commands.base_orientation_command import (
+    UniformBaseOrientationCommandCfg,
+)
 from mind.tasks.locomotion.mdp.commands.heigth_command import UniformHeightCommandCfg
-from mind.tasks.locomotion.mdp.commands.uniform_vel_with_metrics import UniformVelocityCommandWithMetricsCfg
+from mind.tasks.locomotion.mdp.commands.uniform_vel_with_metrics import (
+    UniformVelocityCommandWithMetricsCfg,
+)
 from mind.tasks.locomotion.mdp.observations import symmetry
 
 
@@ -52,10 +56,9 @@ class SpotTerminationsCfg:
 class MySceneCfg(InteractiveSceneCfg):
     """Configuration for the terrain scene with a legged robot."""
 
-    # ground terrain
     terrain = TerrainImporterCfg(
         prim_path="/World/ground",
-        terrain_type="plane",  # "generator",
+        terrain_type="plane",
         collision_group=-1,
         physics_material=sim_utils.RigidBodyMaterialCfg(
             friction_combine_mode="multiply",
@@ -64,18 +67,24 @@ class MySceneCfg(InteractiveSceneCfg):
             dynamic_friction=1.0,
         ),
         visual_material=sim_utils.MdlFileCfg(
-            mdl_path=f"{ISAACLAB_NUCLEUS_DIR}/Materials/TilesMarbleSpiderWhiteBrickBondHoned/TilesMarbleSpiderWhiteBrickBondHoned.mdl",
+            mdl_path=(
+                f"{ISAACLAB_NUCLEUS_DIR}/Materials/"
+                "TilesMarbleSpiderWhiteBrickBondHoned/"
+                "TilesMarbleSpiderWhiteBrickBondHoned.mdl"
+            ),
             project_uvw=True,
             texture_scale=(0.25, 0.25),
         ),
-        # visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.5, 0.5, 0.5)),
         debug_vis=False,
     )
 
-    # robots
     robot: ArticulationCfg = SPOT_ARM_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
 
-    contact_forces = ContactSensorCfg(prim_path="{ENV_REGEX_NS}/Robot/.*", history_length=3, track_air_time=True)
+    contact_forces = ContactSensorCfg(
+        prim_path="{ENV_REGEX_NS}/Robot/.*",
+        history_length=3,
+        track_air_time=True,
+    )
 
     sky_light = AssetBaseCfg(
         prim_path="/World/skyLight",
@@ -87,31 +96,20 @@ def undesired_contacts_squared(env, threshold, sensor_cfg):
     """Penalize undesired contacts using the sum of squared terms."""
     contact_sensor = env.scene.sensors[sensor_cfg.name]
 
-    # Shape: (batch_size, window_size, num_bodies, 3)
     net_contact_forces = contact_sensor.data.net_forces_w_history
 
-    # 1. Isolate the feet and sum the squared X, Y, Z terms.
-    # Shape: (batch_size, window_size, num_feet)
     squared_forces = torch.sum(torch.square(net_contact_forces[:, :, sensor_cfg.body_ids]), dim=-1)
 
-    # 2. Find the peak impact over the history window (dim=1) for EACH foot.
-    # Shape: (batch_size, num_feet)
     peak_squared_forces = torch.max(squared_forces, dim=1)[0]
 
-    # 3. Subtract the threshold. Some feet will be positive (hard hit),
-    # Shape: (batch_size, num_feet)
     violation = peak_squared_forces - (threshold**2)
 
-    # 4. Clip negative values to 0 (prevents soft feet from canceling hard feet),
-    # Shape: (batch_size,)
     return torch.sum(violation.clip(min=0.0), dim=1)
 
 
 def base_linear_stoped_velocity_reward(env, asset_cfg, std: float) -> torch.Tensor:
     """Reward tracking of linear velocity commands (xy axes) using abs exponential kernel."""
-    # extract the used quantities (to enable type-hinting)
     asset = env.scene[asset_cfg.name]
-    # compute the error
     target = env.command_manager.get_command("base_velocity")
     lin_vel_error = torch.linalg.norm((asset.data.root_lin_vel_b), dim=1)
     is_zero = torch.linalg.norm(target, dim=1) == 0
@@ -165,11 +163,11 @@ class RewardsCfg:
 
     foot_clearance = RewardTermCfg(
         func=loco_mdp.foot_clearance_reward,
-        weight=0.5,  # half
+        weight=0.5,
         params={
             "std": 0.05,
             "tanh_mult": 2.0,
-            "target_height": 0.08,  # .10 -> 0.8
+            "target_height": 0.08,
             "asset_cfg": SceneEntityCfg("robot", body_names=".*_foot"),
         },
     )
@@ -184,7 +182,7 @@ class RewardsCfg:
 
     gait = RewardTermCfg(
         func=loco_mdp.GaitReward,
-        weight=5.0,  # 10 -> 5
+        weight=5.0,
         params={
             "std": 0.025,
             "max_err": 0.5,
@@ -195,7 +193,6 @@ class RewardsCfg:
         },
     )
 
-    # -- penalties
     foot_impact = RewardTermCfg(
         func=loco_mdp.foot_impact_penalty_2,
         weight=-0.00,
@@ -261,17 +258,25 @@ class RewardsCfg:
     contact_forces = RewardTermCfg(
         func=undesired_contacts_squared,
         weight=-2e-7,
-        params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_foot"), "threshold": 200.0},
+        params={
+            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_foot"),
+            "threshold": 200.0,
+        },
     )
 
 
 def time_(env):
-    sim_time: float = env._sim_step_counter * env.step_dt
+    sim_time: float = env._sim_step_counter * env.physics_dt
     sim_tensor = torch.tensor([sim_time], device=env.device).repeat(env.num_envs, 1)
     return sim_tensor
 
 
-def last_action(env, action_name: str | None = None, scale: float = 1, offset: float = 0) -> torch.Tensor:
+def last_action(
+    env,
+    action_name: str | None = None,
+    scale: float = 1,
+    offset: float = 0,
+) -> torch.Tensor:
     """The last input action to the environment.
 
     The name of the action term for which the action is required. If None, the
@@ -283,15 +288,21 @@ def last_action(env, action_name: str | None = None, scale: float = 1, offset: f
         return (env.action_manager.get_term(action_name).raw_actions - offset) / scale
 
 
-def joint_pos_rel(env, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"), is_relative: bool = True):
+def joint_pos_rel(
+    env,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    is_relative: bool = True,
+):
     """The joint positions of the asset w.r.t. the default joint positions.
 
-    Note: Only the joints configured in :attr:`asset_cfg.joint_ids` will have their positions returned.
+    Only joints configured in :attr:`asset_cfg.joint_ids` are returned.
     """
-    # extract the used quantities (to enable type-hinting)
     asset = env.scene[asset_cfg.name]
     if is_relative:
-        return asset.data.joint_pos[:, asset_cfg.joint_ids] - asset.data.default_joint_pos[:, asset_cfg.joint_ids]
+        return (
+            asset.data.joint_pos[:, asset_cfg.joint_ids]
+            - asset.data.default_joint_pos[:, asset_cfg.joint_ids]
+        )
     else:
         return asset.data.joint_pos[:, asset_cfg.joint_ids]
 
@@ -353,7 +364,6 @@ class ObservationsCfg:
             },
         )
 
-        # `` observation terms (order preserved)
         base_lin_vel = ObsTerm(
             func=mdp.base_lin_vel,
             params={"asset_cfg": SceneEntityCfg("robot")},
@@ -369,7 +379,10 @@ class ObservationsCfg:
             params={"asset_cfg": SceneEntityCfg("robot")},
             noise=Unoise(n_min=-0.05, n_max=0.05),
         )
-        velocity_commands = ObsTerm(func=mdp.generated_commands, params={"command_name": "base_velocity"})
+        velocity_commands = ObsTerm(
+            func=mdp.generated_commands,
+            params={"command_name": "base_velocity"},
+        )
         actions = ObsTerm(func=last_action, params={"action_name": "joint_pos"})
 
         def __post_init__(self):
@@ -380,7 +393,6 @@ class ObservationsCfg:
     class PolicyCfg(ObsGroup):
         """Observations for policy group."""
 
-        # `` observation terms (order preserved)
         base_lin_vel = ObsTerm(
             func=mdp.base_lin_vel,
             params={"asset_cfg": SceneEntityCfg("robot")},
@@ -396,7 +408,10 @@ class ObservationsCfg:
             params={"asset_cfg": SceneEntityCfg("robot")},
             noise=Unoise(n_min=-0.05, n_max=0.05),
         )
-        velocity_commands = ObsTerm(func=mdp.generated_commands, params={"command_name": "base_velocity"})
+        velocity_commands = ObsTerm(
+            func=mdp.generated_commands,
+            params={"command_name": "base_velocity"},
+        )
 
         joint_pos = ObsTerm(
             func=joint_pos_rel,
@@ -423,9 +438,15 @@ class ObservationsCfg:
         )
 
         actions = ObsTerm(func=last_action, params={"action_name": "joint_pos"})
-        height_commands = ObsTerm(func=mdp.generated_commands, params={"command_name": "base_height"})
+        height_commands = ObsTerm(
+            func=mdp.generated_commands,
+            params={"command_name": "base_height"},
+        )
 
-        base_orientation_commands = ObsTerm(func=mdp.generated_commands, params={"command_name": "base_orientation"})
+        base_orientation_commands = ObsTerm(
+            func=mdp.generated_commands,
+            params={"command_name": "base_orientation"},
+        )
 
         def __post_init__(self):
             self.enable_corruption = True
@@ -438,19 +459,18 @@ class ObservationsCfg:
 N_LEG = len(ORDERED_JOINT_NAMES_SPOT_BASE)
 N_ARM = len(ORDERED_JOINT_NAMES_SPOT_ARM)
 
-# This should be the same order as the observation terms in the PolicyCfg
 OBS_DIMS = [
-    (3, symmetry.left_right_symmetry_base_lin_vel),  # base_lin_vel
-    (3, symmetry.left_right_symmetry_base_ang_vel),  # base_ang_vel
-    (3, symmetry.left_right_symmetry_projected_gravity),  # projected_gravity
-    (3, symmetry.left_right_symmetry_velocity_commands),  # velocity_commands
-    (N_LEG, symmetry.left_right_symmetry_base_joint_pos),  # joint_pos
-    (N_ARM, symmetry.left_right_symmetry_arm_joints),  # arm_joint_pos
-    (N_LEG, symmetry.left_right_symmetry_base_joint_vel),  # joint_vel
-    (N_ARM, symmetry.left_right_symmetry_arm_joint_vel),  # arm_joint_vel
-    (N_LEG, symmetry.left_right_symmetry_actions),  # actions
-    (1, symmetry.left_right_symmetry_height_commands),  # height_commands
-    (2, symmetry.left_right_symmetry_base_orientation_commands),  # base_orientation_commands
+    (3, symmetry.left_right_symmetry_base_lin_vel),
+    (3, symmetry.left_right_symmetry_base_ang_vel),
+    (3, symmetry.left_right_symmetry_projected_gravity),
+    (3, symmetry.left_right_symmetry_velocity_commands),
+    (N_LEG, symmetry.left_right_symmetry_base_joint_pos),
+    (N_ARM, symmetry.left_right_symmetry_arm_joints),
+    (N_LEG, symmetry.left_right_symmetry_base_joint_vel),
+    (N_ARM, symmetry.left_right_symmetry_arm_joint_vel),
+    (N_LEG, symmetry.left_right_symmetry_actions),
+    (1, symmetry.left_right_symmetry_height_commands),
+    (2, symmetry.left_right_symmetry_base_orientation_commands),
 ]
 TOTAL_DIM = sum(dim for dim, _ in OBS_DIMS)
 
@@ -476,15 +496,14 @@ def left_right_symmetry_obs(
 ):
     """Args:
 
-        obs (tensordict.TensorDict | None): The observation tensor dictionary. If None, the observation is not used.
-        action (torch.Tensor | None): The action tensor. If None, the action is not used.
+        obs: Observation tensor dictionary, or None to omit observation augmentation.
+        actions: Action tensor, or None to omit action augmentation.
+
     Returns:
-        A tuple containing the augmented observation dictionary and action tensors. The tensors can be None,
-        if their respective inputs are None.
+        Augmented observation dictionary and action tensors, with omitted inputs
+        returned as None.
     """
     if obs is not None:
-        obs_clone = obs.clone()
-        # Apply left-right symmetry to policy proprioception observation
         obs_clone = obs.clone()
         obs_clone["policy"] = left_right_proprio_symmetry_obs(obs_clone["policy"])
         obs = torch.cat([obs, obs_clone], dim=0)
@@ -518,7 +537,6 @@ def replace_value_at_step(env, env_ids, data, value, num_steps):
 class CurriculumsCfg:
     """Curriculum configuration for gradually enabling perturbations."""
 
-    # Enable external_force_torque at step 1000
     enable_external_force_torque_force = CurrTerm(
         func=mdp.modify_term_cfg,
         params={
@@ -543,7 +561,6 @@ class CurriculumsCfg:
         },
     )
 
-    # Enable push_robot velocity perturbations at step 1000
     enable_push_robot_vel = CurrTerm(
         func=mdp.modify_term_cfg,
         params={
@@ -568,7 +585,6 @@ class CurriculumsCfg:
 class EventCfg:
     """Configuration for randomization."""
 
-    # startup
     physics_material = EventTerm(
         func=mdp.randomize_rigid_body_material,
         mode="startup",
@@ -611,7 +627,6 @@ class EventCfg:
         },
     )
 
-    # reset
     external_force_torque = EventTerm(
         func=mdp.apply_external_force_torque,
         mode="reset",
@@ -620,11 +635,11 @@ class EventCfg:
             "force_range": (
                 0.0,
                 0.0,
-            ),  # starts zeroed, enabled at step 1000 via curriculum
+            ),
             "torque_range": (
                 0.0,
                 0.0,
-            ),  # starts zeroed, enabled at step 1000 via curriculum
+            ),
         },
     )
 
@@ -663,7 +678,6 @@ class EventCfg:
         },
     )
 
-    # interval
     push_robot = EventTerm(
         func=mdp.push_by_setting_velocity,
         mode="interval",
@@ -671,18 +685,18 @@ class EventCfg:
         params={
             "asset_cfg": SceneEntityCfg("robot"),
             "velocity_range": {
-                "x": (0.0, 0.0),  # starts zeroed, enabled at step 1000 via curriculum
-                "y": (0.0, 0.0),  # starts zeroed, enabled at step 1000 via curriculum
-                "z": (0.0, 0.0),  # starts zeroed, enabled at step 1000 via curriculum
+                "x": (0.0, 0.0),
+                "y": (0.0, 0.0),
+                "z": (0.0, 0.0),
                 "roll": (
                     0.0,
                     0.0,
-                ),  # starts zeroed, enabled at step 1000 via curriculum
+                ),
                 "pitch": (
                     0.0,
                     0.0,
-                ),  # starts zeroed, enabled at step 1000 via curriculum
-                "yaw": (0.0, 0.0),  # starts zeroed, enabled at step 1000 via curriculum
+                ),
+                "yaw": (0.0, 0.0),
             },
         },
     )
@@ -753,8 +767,6 @@ class LocomotionEnvCfg(ManagerBasedRLEnvCfg):
         self.sim.physics_material = self.scene.terrain.physics_material
         self.sim.physx.gpu_max_rigid_patch_count = 10 * 2**15
 
-        # check if terrain levels curriculum is enabled - if so, enable curriculum for terrain generator
-        # this generates terrains with increasing difficulty and is useful for training
         if getattr(self.curriculum, "terrain_levels", None) is not None:
             if self.scene.terrain.terrain_generator is not None:
                 self.scene.terrain.terrain_generator.curriculum = True
@@ -762,22 +774,14 @@ class LocomotionEnvCfg(ManagerBasedRLEnvCfg):
             if self.scene.terrain.terrain_generator is not None:
                 self.scene.terrain.terrain_generator.curriculum = False
 
-        # general settings
-        self.decimation = 4  # 50 Hz
+        self.decimation = 4
         self.episode_length_s = 20.0
 
-        # simulation settings
-        self.sim.dt = 0.005  # 200 Hz
+        self.sim.dt = 0.005
         self.sim.render_interval = self.decimation
         self.sim.physics_material.static_friction = 1.0
         self.sim.physics_material.dynamic_friction = 1.0
         self.sim.physics_material.friction_combine_mode = "multiply"
         self.sim.physics_material.restitution_combine_mode = "multiply"
 
-        # update sensor update periods
-        # we tick all the sensors based on the smallest update period (physics update period)
         self.scene.contact_forces.update_period = self.sim.dt
-        # update sensor update periods
-        # we tick all the sensors based on the smallest update period (physics update period)
-        if self.scene.contact_forces is not None:
-            self.scene.contact_forces.update_period = self.sim.dt

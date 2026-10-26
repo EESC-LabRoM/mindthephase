@@ -20,24 +20,9 @@ def add_rsl_rl_args(parser: argparse.ArgumentParser):
     Args:
         parser: The parser to add the arguments to.
     """
-    # create a new argument group
     arg_group = parser.add_argument_group(
         "rsl_rl", description="Arguments for RSL-RL agent."
     )
-    # -- experiment arguments
-    arg_group.add_argument(
-        "--experiment_name",
-        type=str,
-        default=None,
-        help="Name of the experiment folder where logs will be stored.",
-    )
-    arg_group.add_argument(
-        "--run_name",
-        type=str,
-        default=None,
-        help="Run name suffix to the log directory.",
-    )
-    # -- load arguments
     arg_group.add_argument(
         "--resume",
         action=argparse.BooleanOptionalAction,
@@ -53,11 +38,10 @@ def add_rsl_rl_args(parser: argparse.ArgumentParser):
     arg_group.add_argument(
         "--checkpoint", type=str, default=None, help="Checkpoint file to resume from."
     )
-    # -- logger arguments
     arg_group.add_argument(
         "--logger",
         type=str,
-        default=None,
+        default="wandb",
         choices={"wandb", "tensorboard", "neptune"},
         help="Logger module to use.",
     )
@@ -83,7 +67,6 @@ def parse_rsl_rl_cfg(
     """
     from isaaclab_tasks.utils.parse_cfg import load_cfg_from_registry
 
-    # load the default configuration
     rslrl_cfg: RslRlOnPolicyRunnerCfg = load_cfg_from_registry(
         task_name, "rsl_rl_cfg_entry_point"
     )
@@ -112,7 +95,9 @@ def find_checkpoint(log_root: str, task_name: str, load_run: str, checkpoint: st
     candidates = []
     for entry in os.scandir(log_root):
         task_file = os.path.join(entry.path, TASK_FILE)
-        if not (entry.is_dir() and re.match(load_run, entry.name) and os.path.isfile(task_file)):
+        if not (
+            entry.is_dir() and re.match(load_run, entry.name) and os.path.isfile(task_file)
+        ):
             continue
         with open(task_file) as f:
             if f.read().strip() == task:
@@ -139,7 +124,6 @@ def update_rsl_rl_cfg(agent_cfg: RslRlOnPolicyRunnerCfg, args_cli: argparse.Name
     Returns:
         The updated configuration for RSL-RL agent based on inputs.
     """
-    # override the default configuration with CLI arguments
     if hasattr(args_cli, "seed") and args_cli.seed is not None:
         agent_cfg.seed = args_cli.seed
     if args_cli.resume is not None:
@@ -148,20 +132,17 @@ def update_rsl_rl_cfg(agent_cfg: RslRlOnPolicyRunnerCfg, args_cli: argparse.Name
         agent_cfg.load_run = args_cli.load_run
     if args_cli.checkpoint is not None:
         agent_cfg.load_checkpoint = args_cli.checkpoint
-    if args_cli.run_name is not None:
-        agent_cfg.run_name = args_cli.run_name
     if args_cli.logger is not None:
         agent_cfg.logger = args_cli.logger
-    # set the project name for wandb and neptune
     if agent_cfg.logger in {"wandb", "neptune"} and args_cli.log_project_name:
         agent_cfg.wandb_project = args_cli.log_project_name
         agent_cfg.neptune_project = args_cli.log_project_name
     if agent_cfg.logger == "wandb":
-        # train.py rejects a missing project; playback never opens a W&B run.
-        agent_cfg.wandb_project = args_cli.log_project_name or os.environ.get("WANDB_PROJECT")
+        agent_cfg.wandb_project = (
+            args_cli.log_project_name or os.environ.get("WANDB_PROJECT") or "mindthephase"
+        )
         entity = os.environ.get("WANDB_ENTITY")
         if entity:
-            # RSL-RL 3.0.1 reads WANDB_USERNAME rather than a config entity.
             os.environ["WANDB_USERNAME"] = entity
 
     return agent_cfg

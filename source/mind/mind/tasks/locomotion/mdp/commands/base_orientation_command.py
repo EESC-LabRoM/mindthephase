@@ -30,21 +30,15 @@ class UniformBaseOrientationCommand(CommandTerm):
             cfg: The configuration parameters for the command term.
             env: The environment object.
         """
-        # initialize the base class
         super().__init__(cfg, env)
 
-        # create buffers to store the command [roll, pitch]
         self.orientation_command = torch.zeros(self.num_envs, 2, device=self.device)
 
-        # create buffer to store command quaternions [w, x, y, z] (yaw fixed at 0)
-        # used for downstream compatibility (e.g., projected gravity calculations)
         self.orientation_command_quat = torch.zeros(self.num_envs, 4, device=self.device)
-        self.orientation_command_quat[:, 0] = 1.0  # identity quaternion
+        self.orientation_command_quat[:, 0] = 1.0
 
-        # constant zeros tensor for yaw dimensions in quaternion math
         self._yaw_zeros = torch.zeros(self.num_envs, device=self.device)
 
-        # create helper tensors for sampling bounds [roll, pitch]
         self._low = torch.tensor(
             [cfg.roll_range[0], cfg.pitch_range[0]],
             device=self.device,
@@ -54,18 +48,14 @@ class UniformBaseOrientationCommand(CommandTerm):
             device=self.device,
         )
 
-        # create boolean mask for flat environments (permanently designated)
         self.is_flat_env = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         num_flat_envs = int(self.num_envs * cfg.flat_envs)
         self.is_flat_env[:num_flat_envs] = True
 
-        # offset vector for marker position
         self._marker_pos_offset = torch.tensor(cfg.marker_pos_offset, device=self.device)
 
-        # obtain the asset
         self.asset: RigidObject = env.scene[cfg.asset_name]
 
-        # -- metrics
         self.metrics["orientation_error"] = torch.zeros(self.num_envs, device=self.device)
 
     def __str__(self) -> str:
@@ -98,14 +88,12 @@ class UniformBaseOrientationCommand(CommandTerm):
             device=self.device,
         )
 
-        # Force flat orientation for static flat environments
         self.orientation_command[env_ids] = torch.where(
             self.is_flat_env[env_ids].unsqueeze(-1),
             torch.zeros_like(self.orientation_command[env_ids]),
             self.orientation_command[env_ids],
         )
 
-        # Update stored command quaternions with zero yaw
         self.orientation_command_quat[env_ids] = quat_from_euler_xyz(
             self.orientation_command[env_ids, 0],
             self.orientation_command[env_ids, 1],
@@ -117,12 +105,13 @@ class UniformBaseOrientationCommand(CommandTerm):
 
     def _update_metrics(self):
         """Update the metrics for the command term."""
-        # Extract current roll and pitch
         roll, pitch, _ = euler_xyz_from_quat(self.asset.data.root_quat_w)
         current_roll_pitch = torch.stack((roll, pitch), dim=-1)
 
-        # Calculate orientation error as magnitude of roll/pitch difference
-        self.metrics["orientation_error"] = torch.linalg.norm(self.orientation_command - current_roll_pitch, dim=-1)
+        self.metrics["orientation_error"] = torch.linalg.norm(
+            self.orientation_command - current_roll_pitch,
+            dim=-1,
+        )
 
     def _set_debug_vis_impl(self, debug_vis: bool):
         """Set up visualization markers for debugging."""
@@ -136,20 +125,15 @@ class UniformBaseOrientationCommand(CommandTerm):
 
     def _debug_vis_callback(self, event):
         """Update visualization markers each step."""
-        # Dynamically fetch current robot yaw
         _, _, yaw = euler_xyz_from_quat(self.asset.data.root_quat_w)
 
-        # Construct target quaternion using current robot yaw
-        # so the visualizer plane tilts correctly relative to the robot's current heading
         marker_quat = quat_from_euler_xyz(
             self.orientation_command[:, 0],
             self.orientation_command[:, 1],
             yaw,
         )
 
-        # Marker position is centered over the robot root position
         marker_pos = self.asset.data.root_pos_w + self._marker_pos_offset
-        # Visualize
         self.visualizer.visualize(translations=marker_pos, orientations=marker_quat)
 
 

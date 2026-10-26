@@ -52,7 +52,6 @@ class SpotKneeActuator(RemotizedPDActuator):
         self._neg_torque_speed_data = torch.tensor(cfg.neg_torque_speed_limit, device=device)
         self._enable_torque_speed_limit = cfg.enable_torque_speed_limit
 
-        # define remotized joint torque limit
         self._pos_torque_speed_limit = LinearInterpolation(
             self._pos_torque_speed_data[:, 0],
             self._pos_torque_speed_data[:, 1],
@@ -73,7 +72,6 @@ class SpotKneeActuator(RemotizedPDActuator):
         """Compute the control action for the Spot robot with positional torque speed limits."""
         control_action = super().compute(control_action, joint_pos, joint_vel)
 
-        # compute torque-speed limits
         if self._enable_torque_speed_limit:
             pos_torque_limits = self._pos_torque_speed_limit.compute(joint_vel)
             neg_torque_limits = self._neg_torque_speed_limit.compute(joint_vel)

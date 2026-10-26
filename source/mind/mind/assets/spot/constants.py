@@ -4,7 +4,6 @@
 
 SPOT_DEFAULT_POS: tuple[float, float, float] = (0.0, 0.0, 0.65)
 
-### DEPLOY ORDER
 ORDERED_JOINT_NAMES_SPOT_BASE = [
     "fl_hx",
     "fl_hy",
@@ -61,7 +60,15 @@ KNEE_DAMPING: float = 1.5
 
 ARM_EFFORT_LIMIT: tuple[float, ...] = (90.9, 181.8, 90.9, 30.3, 30.3, 30.3, 15.32)
 
-ARM_STIFFNESS: tuple[float, ...] = (120.0 * 4, 120.0 * 4, 120.0 * 4, 100.0 * 4, 100.0 * 4, 100.0 * 4, 16.0 * 4)
+ARM_STIFFNESS: tuple[float, ...] = (
+    120.0 * 4,
+    120.0 * 4,
+    120.0 * 4,
+    100.0 * 4,
+    100.0 * 4,
+    100.0 * 4,
+    16.0 * 4,
+)
 
 ARM_DAMPING: tuple[float, ...] = (2.0 * 4, 2.0 * 4, 2.0 * 4, 2.0 * 4, 2.0 * 4, 2.0 * 4, 0.32 * 4)
 
@@ -69,8 +76,8 @@ ARM_ARMATURE: tuple[float, ...] = (0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.001)
 
 """The lookup table for the knee joint parameters of the Boston Dynamics Spot robot.
 
-This table describes the relationship between the joint angle (rad), the transmission ratio (in/out),
-and the output torque (N*m). It is used to interpolate the output torque based on the joint angle.
+This table describes the relationship between joint angle (rad), transmission ratio
+(in/out), and output torque (N*m), used to interpolate torque from joint angle.
 """
 JOINT_PARAMETER_LOOKUP_TABLE: list[list[float]] = [
     [-2.792900, -24.776718, 37.165077],
@@ -176,11 +183,17 @@ JOINT_PARAMETER_LOOKUP_TABLE: list[list[float]] = [
     [-0.247100, -20.401667, 30.602500],
 ]
 
-def clip_lookup_table_values(lookup_table: list[list[float]], maximum_value: float = 80.0) -> list[list[float]]:
+def clip_lookup_table_values(
+    lookup_table: list[list[float]],
+    maximum_value: float = 80.0,
+) -> list[list[float]]:
     """Clips the maximum value of the elements in the provided lookup table."""
     return [[min(element, maximum_value) for element in row] for row in lookup_table]
 
-JOINT_PARAMETER_LOOKUP_TABLE = clip_lookup_table_values(JOINT_PARAMETER_LOOKUP_TABLE, maximum_value=80.0)
+JOINT_PARAMETER_LOOKUP_TABLE = clip_lookup_table_values(
+    JOINT_PARAMETER_LOOKUP_TABLE,
+    maximum_value=80.0,
+)
 
 POS_TORQUE_SPEED_LIMIT: list[list[float]] = [
     [-30.0, 96.9972],

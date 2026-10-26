@@ -1,2 +1,9 @@
 .venv
-IsaacLab
+.git
+**/.git
+**/__pycache__
+build
+logs
+outputs
+tests
+wandb

@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 
 atomic = true
 profile = "black"
-line_length = 120
+line_length = 100
 py_version = 311
 skip_glob = ["docs/*", "logs/*"]
 group_by_package = true
@@ -63,7 +63,7 @@ known_local_folder = "config"
 exclude = ["**/__pycache__", "**/docs", "**/logs", ".git", ".vscode"]
 
 typeCheckingMode = "basic"
-pythonVersion = "3.10"
+pythonVersion = "3.11"
 pythonPlatform = "Linux"
 enableTypeIgnoreComments = true
 reportMissingImports = "none"
@@ -77,7 +77,6 @@ extraPaths = [
   "IsaacLab/source/isaaclab",
   "IsaacLab/source/isaaclab_rl",
   "IsaacLab/source/isaaclab_mimic",
-  "IsaacLab/source/isaaclab_contrib",
   "IsaacLab/source/isaaclab_tasks",
 ]
 
@@ -86,7 +85,7 @@ url = "https://pypi.nvidia.com/"
 
 [tool.ruff]
 
-line-length = 120
+line-length = 100
 
 target-version = "py311"
 
@@ -122,15 +121,12 @@ max-complexity = 10
 [tool.ruff.lint.pydocstyle]
 convention = "google"
 
-[tool.ruff.lint.flake8-bugbear]
-extend-immutable-calls = ["gtsam.Pose3"]
-
-
 [project]
 name = "mind"
 version = "0.1.0"
-description = "IsaacLab extension for mind training code."
+description = "Mind the Phase: effective rank in legged locomotion (CoRL 2026)."
 requires-python = "==3.11.*"
+license-files = ["LICENSE", "licenses/*.txt"]
 dependencies = [
   "isaaclab==0.47.2",
   "isaaclab-assets==0.2.3",
@@ -157,8 +153,11 @@ isaaclab-rl = { path = "IsaacLab/source/isaaclab_rl", editable = true }
 build-constraint-dependencies = ["setuptools<81"]
 
 
-[tool.setuptools]
-packages = ["mind"]
-
 [tool.setuptools.package-dir]
 "" = "source/mind"
+
+[tool.setuptools.packages.find]
+where = ["source/mind"]
+
+[tool.setuptools.package-data]
+mind = ["**/*.urdf", "**/*.obj", "**/*.mtl", "**/*.onnx"]

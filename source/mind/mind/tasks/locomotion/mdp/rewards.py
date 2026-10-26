@@ -21,15 +21,14 @@ def track_base_projected_gravity_l2(
     (derived from the base orientation command) and the current base projected gravity.
     Note that this naturally ignores heading (yaw) alignment and focuses purely on base tilt.
     """
-    # extract the used quantities
     asset: RigidObject = env.scene[asset_cfg.name]
     command_term = env.command_manager.get_term(command_name)
 
-    # Calculate torso projected gravity goal using the commanded quaternion orientation
-    # dynamically applied to the world gravity direction vector from the asset data
-    torso_projected_gravity_goal = quat_apply_inverse(command_term.orientation_command_quat, asset.data.GRAVITY_VEC_W)
+    torso_projected_gravity_goal = quat_apply_inverse(
+        command_term.orientation_command_quat,
+        asset.data.GRAVITY_VEC_W,
+    )
 
-    # Return the squared error of the projection components (x, y axes of gravity vector)
     return torch.sum(
         torch.square(torso_projected_gravity_goal[:, :2] - asset.data.projected_gravity_b[:, :2]),
         dim=1,
@@ -49,8 +48,12 @@ def foot_clearance_reward(
     base_velocity_command = env.command_manager.get_command("base_velocity")
     command_magnitude = torch.norm(base_velocity_command, dim=1)
 
-    foot_z_target_error = torch.square(asset.data.body_pos_w[:, asset_cfg.body_ids, 2] - target_height)
-    foot_velocity_tanh = torch.tanh(tanh_mult * torch.norm(asset.data.body_lin_vel_w[:, asset_cfg.body_ids, :2], dim=2))
+    foot_z_target_error = torch.square(
+        asset.data.body_pos_w[:, asset_cfg.body_ids, 2] - target_height
+    )
+    foot_velocity_tanh = torch.tanh(
+        tanh_mult * torch.norm(asset.data.body_lin_vel_w[:, asset_cfg.body_ids, :2], dim=2)
+    )
     reward = torch.exp(-torch.sum(foot_z_target_error * foot_velocity_tanh, dim=1) / std)
 
     return torch.where(command_magnitude > 0.05, reward, 0.0)
@@ -92,7 +95,10 @@ class GaitReward(ManagerTermBase):
             or len(synced_feet_pair_names[0]) != 2
             or len(synced_feet_pair_names[1]) != 2
         ):
-            raise ValueError("This reward only supports gaits with two pairs of synchronized feet, like trotting.")
+            raise ValueError(
+                "This reward only supports gaits with two pairs of synchronized feet, "
+                "like trotting."
+            )
         synced_feet_pair_0 = self.contact_sensor.find_bodies(synced_feet_pair_names[0])[0]
         synced_feet_pair_1 = self.contact_sensor.find_bodies(synced_feet_pair_names[1])[0]
         self.synced_feet_pairs = [synced_feet_pair_0, synced_feet_pair_1]
@@ -107,13 +113,31 @@ class GaitReward(ManagerTermBase):
         asset_cfg: SceneEntityCfg,
         sensor_cfg: SceneEntityCfg,
     ) -> torch.Tensor:
-        sync_reward_0 = self._sync_reward_func(self.synced_feet_pairs[0][0], self.synced_feet_pairs[0][1])
-        sync_reward_1 = self._sync_reward_func(self.synced_feet_pairs[1][0], self.synced_feet_pairs[1][1])
+        sync_reward_0 = self._sync_reward_func(
+            self.synced_feet_pairs[0][0],
+            self.synced_feet_pairs[0][1],
+        )
+        sync_reward_1 = self._sync_reward_func(
+            self.synced_feet_pairs[1][0],
+            self.synced_feet_pairs[1][1],
+        )
         sync_reward = sync_reward_0 * sync_reward_1
-        async_reward_0 = self._async_reward_func(self.synced_feet_pairs[0][0], self.synced_feet_pairs[1][0])
-        async_reward_1 = self._async_reward_func(self.synced_feet_pairs[0][1], self.synced_feet_pairs[1][1])
-        async_reward_2 = self._async_reward_func(self.synced_feet_pairs[0][0], self.synced_feet_pairs[1][1])
-        async_reward_3 = self._async_reward_func(self.synced_feet_pairs[1][0], self.synced_feet_pairs[0][1])
+        async_reward_0 = self._async_reward_func(
+            self.synced_feet_pairs[0][0],
+            self.synced_feet_pairs[1][0],
+        )
+        async_reward_1 = self._async_reward_func(
+            self.synced_feet_pairs[0][1],
+            self.synced_feet_pairs[1][1],
+        )
+        async_reward_2 = self._async_reward_func(
+            self.synced_feet_pairs[0][0],
+            self.synced_feet_pairs[1][1],
+        )
+        async_reward_3 = self._async_reward_func(
+            self.synced_feet_pairs[1][0],
+            self.synced_feet_pairs[0][1],
+        )
         async_reward = async_reward_0 * async_reward_1 * async_reward_2 * async_reward_3
         cmd = torch.norm(env.command_manager.get_command("base_velocity"), dim=1)
         return torch.where(cmd > 0.0, sync_reward * async_reward, 0.0)
@@ -122,7 +146,10 @@ class GaitReward(ManagerTermBase):
         """Reward synchronization of two feet."""
         air_time = self.contact_sensor.data.current_air_time
         contact_time = self.contact_sensor.data.current_contact_time
-        se_air = torch.clip(torch.square(air_time[:, foot_0] - air_time[:, foot_1]), max=self.max_err**2)
+        se_air = torch.clip(
+            torch.square(air_time[:, foot_0] - air_time[:, foot_1]),
+            max=self.max_err**2,
+        )
         se_contact = torch.clip(
             torch.square(contact_time[:, foot_0] - contact_time[:, foot_1]),
             max=self.max_err**2,

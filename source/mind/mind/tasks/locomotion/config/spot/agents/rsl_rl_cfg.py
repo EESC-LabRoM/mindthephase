@@ -26,9 +26,11 @@ class SpotLocomotionPPORunnerCfg(RslRlOnPolicyRunnerCfg):
     max_iterations = 10_000
     save_interval = 200
     experiment_name = "mind" + datetime.now().strftime("%Y%m%d_%H%M%S")
-    run_name: str = field(default_factory=lambda: f"mind_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
+    run_name: str = field(
+        default_factory=lambda: f"mind_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    )
     logger = "wandb"
-    wandb_project = os.environ.get("WANDB_PROJECT")
+    wandb_project = os.environ.get("WANDB_PROJECT") or "mindthephase"
     empirical_normalization = False
     policy = RslRlPpoActorCriticCfg(
         init_noise_std=1.0,
