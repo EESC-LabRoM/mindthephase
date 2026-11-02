@@ -1,0 +1,35 @@
+cff-version: 1.2.0
+message: "If you use this code, please cite the paper."
+title: "Mind the Phase: Effective Rank and Representation Health in Legged Locomotion"
+type: software
+authors:
+  - given-names: Felipe
+    family-names: Tommaselli
+  - given-names: Ricardo V.
+    family-names: Godoy
+  - given-names: Thiago H.
+    family-names: Segreto
+  - given-names: Juliano D.
+    family-names: Negri
+  - given-names: Marcelo
+    family-names: Becker
+repository-code: "https://github.com/EESC-LabRoM/mindthephase"
+url: "https://felipe-tommaselli.github.io/mindthephase/"
+license-url: "https://github.com/EESC-LabRoM/mindthephase/blob/main/LICENSE"
+preferred-citation:
+  type: conference-paper
+  authors:
+    - given-names: Felipe
+      family-names: Tommaselli
+    - given-names: Ricardo V.
+      family-names: Godoy
+    - given-names: Thiago H.
+      family-names: Segreto
+    - given-names: Juliano D.
+      family-names: Negri
+    - given-names: Marcelo
+      family-names: Becker
+  title: "Mind the Phase: Effective Rank and Representation Health in Legged Locomotion"
+  collection-title: "Conference on Robot Learning (CoRL)"
+  year: 2026
+  url: "https://arxiv.org/abs/2609.06958"

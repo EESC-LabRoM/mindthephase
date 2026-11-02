@@ -126,7 +126,7 @@ name = "mind"
 version = "0.1.0"
 description = "Mind the Phase: effective rank in legged locomotion (CoRL 2026)."
 requires-python = "==3.11.*"
-license-files = ["LICENSE", "licenses/*.txt"]
+license-files = ["LICENSE*"]
 dependencies = [
   "isaaclab==0.47.2",
   "isaaclab-assets==0.2.3",
